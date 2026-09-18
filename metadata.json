@@ -1,0 +1,6 @@
+{
+  "name": "Lish Studio Record",
+  "description": "Aplikasi edit audio MP3 profesional untuk memotong, menggabungkan trek, equalizer cepat, penyesuaian volume, fade efek, dan konversi format audio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
