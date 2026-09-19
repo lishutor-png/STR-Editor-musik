@@ -43,6 +43,7 @@ fun WaveformView(
     val onSurfaceColor = MaterialTheme.colorScheme.onSurface
     val playheadColor = MaterialTheme.colorScheme.tertiary
     val secondaryColor = MaterialTheme.colorScheme.secondary
+    val errorColor = MaterialTheme.colorScheme.error
 
     Box(
         modifier = modifier
@@ -183,7 +184,7 @@ fun WaveformView(
                     lineTo(endX, 0f)
                     close()
                 }
-                drawPath(path, Color(0xFFF43F5E).copy(alpha = 0.25f))
+                drawPath(path, errorColor.copy(alpha = 0.28f))
             }
 
             // 5. Draw Start Marker & Handle

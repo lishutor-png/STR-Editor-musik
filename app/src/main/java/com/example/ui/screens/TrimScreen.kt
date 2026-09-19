@@ -290,11 +290,18 @@ fun TrimScreen(
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
-                        text = "Geser pin kiri & kanan",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 11.sp
-                    )
+                    androidx.compose.material3.TextButton(
+                        onClick = { viewModel.resetTrimRange() },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp).testTag("btn_reset_selection")
+                    ) {
+                        Text(
+                            text = "Pilih Semua (Reset)",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
 
                 WaveformView(
@@ -620,7 +627,7 @@ fun TrimScreen(
                         Text("Fade Out (Akhir Lagu)", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                         Text(
                             text = String.format(Locale.getDefault(), "%.1f detik", fadeOutMs / 1000.0),
-                            color = Color(0xFFF43F5E),
+                            color = MaterialTheme.colorScheme.error,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -631,8 +638,8 @@ fun TrimScreen(
                         onValueChange = { viewModel.setFadeOutMs(it.toLong()) },
                         valueRange = 0f..6000f,
                         colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFFF43F5E),
-                            activeTrackColor = Color(0xFFF43F5E),
+                            thumbColor = MaterialTheme.colorScheme.error,
+                            activeTrackColor = MaterialTheme.colorScheme.error,
                             inactiveTrackColor = MaterialTheme.colorScheme.surface
                         ),
                         modifier = Modifier.testTag("slider_fade_out")
@@ -696,16 +703,16 @@ private fun StepButton(
 ) {
     Box(
         modifier = modifier
-            .height(28.dp)
-            .clip(RoundedCornerShape(6.dp))
+            .height(34.dp)
+            .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surface)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 11.sp,
             fontWeight = FontWeight.Bold
         )
     }

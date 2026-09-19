@@ -241,6 +241,31 @@ fun MergeScreen(
                 }
             }
         } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Urutan Antrean (${mergeTracks.size} lagu)",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                androidx.compose.material3.TextButton(
+                    onClick = { viewModel.clearMergeTracks() },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.height(28.dp).testTag("btn_clear_merge_queue")
+                ) {
+                    Text(
+                        text = "Kosongkan",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
@@ -345,7 +370,7 @@ fun MergeScreen(
                                     Icon(
                                         imageVector = Icons.Default.Delete,
                                         contentDescription = "Hapus",
-                                        tint = Color(0xFFF43F5E),
+                                        tint = MaterialTheme.colorScheme.error,
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }

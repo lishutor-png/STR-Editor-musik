@@ -229,6 +229,12 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
         player.updateSelection(newStart, newEnd)
     }
 
+    fun resetTrimRange() {
+        val duration = _activePcm.value?.durationMs ?: 0L
+        updateTrimRange(0L, duration)
+        _statusMessage.value = "Seleksi di-reset ke durasi penuh"
+    }
+
     fun adjustStartMs(deltaMs: Long) {
         val newStart = (_startMs.value + deltaMs).coerceIn(0L, _endMs.value)
         updateTrimRange(newStart, _endMs.value)
@@ -422,6 +428,11 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
         current.add(track)
         _mergeTracks.value = current
         _statusMessage.value = "${track.title} ditambahkan ke antrean gabung"
+    }
+
+    fun clearMergeTracks() {
+        _mergeTracks.value = emptyList()
+        _statusMessage.value = "Antrean gabung dikosongkan"
     }
 
     fun removeTrackFromMerge(index: Int) {

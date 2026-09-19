@@ -192,10 +192,10 @@ fun LibraryScreen(
                 items(exportedFiles) { item ->
                     val isPlaying = currentlyPlayingPath == item.file.absolutePath
                     val formatBadgeColor = when (item.format) {
-                        AudioFormat.MP3 -> Color(0xFFEAB308)
+                        AudioFormat.MP3 -> MaterialTheme.colorScheme.tertiary
                         AudioFormat.M4A -> MaterialTheme.colorScheme.primary
-                        AudioFormat.WAV -> Color(0xFF10B981)
-                        AudioFormat.FLAC -> Color(0xFF8B5CF6)
+                        AudioFormat.WAV -> MaterialTheme.colorScheme.secondary
+                        AudioFormat.FLAC -> Color(0xFF9F7AEA)
                     }
 
                     Card(
@@ -300,7 +300,7 @@ fun LibraryScreen(
                                         Icon(
                                             imageVector = Icons.Default.Delete,
                                             contentDescription = "Hapus",
-                                            tint = Color(0xFFF43F5E),
+                                            tint = MaterialTheme.colorScheme.error,
                                             modifier = Modifier.size(18.dp)
                                         )
                                     }

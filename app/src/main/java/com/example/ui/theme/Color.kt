@@ -2,35 +2,44 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Brand Lime Green Palette
-val LimeGreen = Color(0xFF84CC16)
-val LimeGreenBright = Color(0xFFA3E635)
-val LimeGreenLight = Color(0xFFBEF264)
-val LimeGreenDark = Color(0xFF4D7C0F)
-val LimeGreenDeep = Color(0xFF365314)
+// Soft Sage & Studio Mint Palette (Matte, non-glare, eye-safe for prolonged audio editing)
+val SageGreen = Color(0xFF5EAA80)
+val SageGreenLight = Color(0xFF88C9A3)
+val SageGreenDark = Color(0xFF327453)
+val SageGreenDeep = Color(0xFF1F382B)
+val SageGreenContainerLight = Color(0xFFE3EFE8)
+val SageGreenContainerDark = Color(0xFF22382D)
 
-// Supporting Accent Colors
-val AccentEmerald = Color(0xFF10B981)
-val AccentAmber = Color(0xFFF59E0B)
-val AccentCyan = Color(0xFF06B6D4)
-val AccentRose = Color(0xFFF43F5E)
+// Backward compatible aliases for any remaining references
+val LimeGreen = SageGreen
+val LimeGreenBright = SageGreen
+val LimeGreenLight = SageGreenLight
+val LimeGreenDark = SageGreenDark
+val LimeGreenDeep = SageGreenDeep
 
-// Dark Theme Surfaces & Text
-val DarkBackground = Color(0xFF0D140B)
-val DarkSurface = Color(0xFF141F12)
-val DarkCard = Color(0xFF1C2C19)
-val DarkCardElevated = Color(0xFF263A22)
-val DarkTextPrimary = Color(0xFFF7FEE7)
-val DarkTextSecondary = Color(0xFFA3B89A)
-val DarkTextMuted = Color(0xFF6D8065)
-val DarkWaveformUnselected = Color(0xFF2E432A)
+// Supporting Muted Accents (Soothing and balanced)
+val AccentEmerald = Color(0xFF4DB6AC)   // Soft seafoam / mint
+val AccentAmber = Color(0xFFDFA15A)     // Soft warm amber / peach
+val AccentCyan = Color(0xFF5CA3CC)      // Soft calm steel blue
+val AccentRose = Color(0xFFE06D6D)      // Soft muted coral rose (non-piercing)
 
-// Light Theme Surfaces & Text
-val LightBackground = Color(0xFFF8FAF4)
+// Dark Theme Surfaces & Text (Studio Charcoal & Soft Slate - Eliminates eye strain)
+val DarkBackground = Color(0xFF14181B)
+val DarkSurface = Color(0xFF1B2227)
+val DarkCard = Color(0xFF232B32)
+val DarkCardElevated = Color(0xFF2B363F)
+val DarkTextPrimary = Color(0xFFE8ECE9)
+val DarkTextSecondary = Color(0xFF96A59D)
+val DarkTextMuted = Color(0xFF65756C)
+val DarkWaveformUnselected = Color(0xFF333F48)
+
+// Light Theme Surfaces & Text (Soft Warm Mist & Forest Slate - Zero monitor glare)
+val LightBackground = Color(0xFFF4F6F5)
 val LightSurface = Color(0xFFFFFFFF)
-val LightCard = Color(0xFFF1F6EC)
-val LightCardElevated = Color(0xFFE5EFDC)
-val LightTextPrimary = Color(0xFF142408)
-val LightTextSecondary = Color(0xFF3E5431)
-val LightTextMuted = Color(0xFF6B825D)
-val LightWaveformUnselected = Color(0xFFD4E3CC)
+val LightCard = Color(0xFFEBF0ED)
+val LightCardElevated = Color(0xFFDFE6E2)
+val LightTextPrimary = Color(0xFF1B2620)
+val LightTextSecondary = Color(0xFF4C5E55)
+val LightTextMuted = Color(0xFF74857C)
+val LightWaveformUnselected = Color(0xFFCBD6D0)
+
