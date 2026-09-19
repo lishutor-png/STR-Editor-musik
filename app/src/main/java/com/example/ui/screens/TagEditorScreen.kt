@@ -1,13 +1,18 @@
 package com.example.ui.screens
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,20 +36,30 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Comment
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FilterCenterFocus
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Numbers
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.SaveAs
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -53,6 +68,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -65,8 +81,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -74,6 +97,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.audio.AudioTagManager
@@ -98,15 +123,36 @@ fun TagEditorScreen(
     val tagMetadata by viewModel.tagMetadata.collectAsState()
     val selectedFile by viewModel.selectedTagFile.collectAsState()
 
+    var adjustingBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isProcessingCover by remember { mutableStateOf(false) }
+
     // Photo picker for album artwork (Google Play policy compliant Android Photo Picker)
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { imageUri: Uri? ->
         if (imageUri != null) {
             coroutineScope.launch {
-                val processed = AudioTagManager.processImageForCover(context, imageUri)
-                if (processed != null) {
-                    viewModel.updateCoverArt(processed.first, processed.second)
+                isProcessingCover = true
+                val bitmap = AudioTagManager.loadBitmapFromUri(context, imageUri)
+                isProcessingCover = false
+                if (bitmap != null) {
+                    adjustingBitmap = bitmap
+                }
+            }
+        }
+    }
+
+    // Fallback file image picker (GetContent) for maximum device compatibility
+    val fileImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { imageUri: Uri? ->
+        if (imageUri != null) {
+            coroutineScope.launch {
+                isProcessingCover = true
+                val bitmap = AudioTagManager.loadBitmapFromUri(context, imageUri)
+                isProcessingCover = false
+                if (bitmap != null) {
+                    adjustingBitmap = bitmap
                 }
             }
         }
@@ -144,10 +190,22 @@ fun TagEditorScreen(
             // Header: Cover Art & Quick Actions
             CoverArtSection(
                 metadata = metadata,
+                isLoading = isProcessingCover,
                 onChangeCover = {
                     photoPickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                     )
+                },
+                onPickFileCover = {
+                    fileImagePickerLauncher.launch("image/*")
+                },
+                onAdjustCover = {
+                    metadata.coverArtBytes?.let { bytes ->
+                        val bitmap = AudioTagManager.loadBitmapFromBytes(bytes)
+                        if (bitmap != null) {
+                            adjustingBitmap = bitmap
+                        }
+                    }
                 },
                 onRemoveCover = { viewModel.removeCoverArt() },
                 onChangeAudioFile = onOpenFilePicker
@@ -178,6 +236,31 @@ fun TagEditorScreen(
 
             Spacer(Modifier.height(16.dp))
         }
+    }
+
+    // Cover Adjustment Dialog (Size, Crop, Pan, Rotate)
+    val currentAdjusting = adjustingBitmap
+    if (currentAdjusting != null) {
+        CoverAdjustDialog(
+            sourceBitmap = currentAdjusting,
+            onDismiss = { adjustingBitmap = null },
+            onApply = { scale, panX, panY, rotation, previewBoxSize ->
+                coroutineScope.launch {
+                    isProcessingCover = true
+                    val (croppedBytes, mime) = AudioTagManager.cropSquareCover(
+                        source = currentAdjusting,
+                        scale = scale,
+                        panX = panX,
+                        panY = panY,
+                        rotationDegrees = rotation,
+                        previewBoxSize = previewBoxSize
+                    )
+                    viewModel.updateCoverArt(croppedBytes, mime)
+                    isProcessingCover = false
+                    adjustingBitmap = null
+                }
+            }
+        )
     }
 }
 
@@ -266,10 +349,23 @@ private fun EmptyTagEditorView(
 @Composable
 private fun CoverArtSection(
     metadata: SongMetadata,
+    isLoading: Boolean,
     onChangeCover: () -> Unit,
+    onPickFileCover: () -> Unit,
+    onAdjustCover: () -> Unit,
     onRemoveCover: () -> Unit,
     onChangeAudioFile: () -> Unit
 ) {
+    val coverImageBitmap = remember(metadata.coverArtBytes) {
+        metadata.coverArtBytes?.let { bytes ->
+            try {
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -308,28 +404,66 @@ private fun CoverArtSection(
             // Cover Image Box
             Box(
                 modifier = Modifier
-                    .size(170.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .size(180.dp)
+                    .clip(RoundedCornerShape(18.dp))
                     .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = RoundedCornerShape(16.dp)
+                        width = 1.5.dp,
+                        color = if (coverImageBitmap != null) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant,
+                        shape = RoundedCornerShape(18.dp)
                     )
                     .background(MaterialTheme.colorScheme.surface)
-                    .clickable { onChangeCover() }
+                    .clickable {
+                        if (coverImageBitmap != null) {
+                            onAdjustCover()
+                        } else {
+                            onChangeCover()
+                        }
+                    }
                     .testTag("cover_image_preview"),
                 contentAlignment = Alignment.Center
             ) {
-                if (metadata.coverArtBytes != null) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(LocalContext.current)
-                            .data(metadata.coverArtBytes)
-                            .crossfade(true)
-                            .build(),
-                        contentDescription = "Cover Album",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(36.dp)
                     )
+                } else if (coverImageBitmap != null) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Image(
+                            bitmap = coverImageBitmap,
+                            contentDescription = "Cover Album",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+
+                        // Overlay hint badge at bottom
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .background(Color.Black.copy(alpha = 0.6f))
+                                .padding(vertical = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Crop,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Text(
+                                    text = "Sentuh untuk atur posisi",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
                 } else {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -353,44 +487,77 @@ private fun CoverArtSection(
             }
 
             // Cover Action Buttons
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Button(
-                    onClick = onChangeCover,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.height(40.dp).testTag("btn_pick_cover_image")
+            if (coverImageBitmap != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = if (metadata.coverArtBytes != null) Icons.Default.Edit else Icons.Default.AddPhotoAlternate,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = if (metadata.coverArtBytes != null) "Ganti Gambar" else "Tambah Gambar",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
+                    Button(
+                        onClick = onChangeCover,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f).height(40.dp).testTag("btn_change_cover_image")
+                    ) {
+                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Ganti", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
 
-                if (metadata.coverArtBytes != null) {
+                    OutlinedButton(
+                        onClick = onAdjustCover,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1.1f).height(40.dp).testTag("btn_adjust_cover_image")
+                    ) {
+                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Atur Posisi", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+
                     OutlinedButton(
                         onClick = onRemoveCover,
                         colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = MaterialTheme.colorScheme.error
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.height(40.dp).testTag("btn_remove_cover_image")
+                        modifier = Modifier.weight(0.9f).height(40.dp).testTag("btn_remove_cover_image")
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Hapus", fontSize = 12.sp)
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(
+                        onClick = onChangeCover,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1.3f).height(42.dp).testTag("btn_pick_cover_image")
+                    ) {
+                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Hapus", fontSize = 13.sp)
+                        Text("Tambah Gambar", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    OutlinedButton(
+                        onClick = onPickFileCover,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f).height(42.dp).testTag("btn_pick_file_cover")
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Pilih File", fontSize = 12.sp)
                     }
                 }
             }
@@ -687,6 +854,253 @@ private fun ActionButtonsSection(
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold
             )
+        }
+    }
+}
+
+@Composable
+fun CoverAdjustDialog(
+    sourceBitmap: Bitmap,
+    onDismiss: () -> Unit,
+    onApply: (scale: Float, panX: Float, panY: Float, rotationDegrees: Int, previewBoxSize: Float) -> Unit
+) {
+    var zoom by remember { mutableStateOf(1.0f) }
+    var panX by remember { mutableStateOf(0f) }
+    var panY by remember { mutableStateOf(0f) }
+    var rotation by remember { mutableStateOf(0) }
+    val density = LocalDensity.current
+
+    val boxSizeDp = 260.dp
+    val boxSizePx = with(density) { boxSizeDp.toPx() }
+
+    val imageBitmap = remember(sourceBitmap) { sourceBitmap.asImageBitmap() }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .padding(vertical = 16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Sesuaikan Cover Lagu",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Geser, perbesar & putar untuk bingkai 1:1",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(32.dp).testTag("btn_close_cover_adjust")
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Tutup",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // Square Viewport (1:1 aspect ratio)
+                Box(
+                    modifier = Modifier
+                        .size(boxSizeDp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color.Black)
+                        .border(
+                            width = 2.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                        .pointerInput(sourceBitmap) {
+                            detectTransformGestures { _, pan, gestureZoom, _ ->
+                                zoom = (zoom * gestureZoom).coerceIn(0.8f, 4.5f)
+                                panX += pan.x
+                                panY += pan.y
+                            }
+                        }
+                        .testTag("cover_adjust_canvas_box"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clipToBounds()
+                    ) {
+                        val effectiveW = if (rotation % 180 == 0) sourceBitmap.width.toFloat() else sourceBitmap.height.toFloat()
+                        val effectiveH = if (rotation % 180 == 0) sourceBitmap.height.toFloat() else sourceBitmap.width.toFloat()
+                        val baseScale = (size.width / effectiveW.coerceAtLeast(1f)).coerceAtLeast(size.height / effectiveH.coerceAtLeast(1f))
+                        val currentScale = baseScale * zoom
+
+                        withTransform({
+                            translate(size.width / 2f + panX, size.height / 2f + panY)
+                            scale(currentScale, currentScale)
+                            rotate(rotation.toFloat())
+                            translate(-sourceBitmap.width / 2f, -sourceBitmap.height / 2f)
+                        }) {
+                            drawImage(imageBitmap)
+                        }
+
+                        // Subtle grid framing lines (rule of thirds)
+                        val gridColor = Color.White.copy(alpha = 0.30f)
+                        drawLine(gridColor, Offset(size.width / 3f, 0f), Offset(size.width / 3f, size.height), strokeWidth = 1.dp.toPx())
+                        drawLine(gridColor, Offset(size.width * 2f / 3f, 0f), Offset(size.width * 2f / 3f, size.height), strokeWidth = 1.dp.toPx())
+                        drawLine(gridColor, Offset(0f, size.height / 3f), Offset(size.width, size.height / 3f), strokeWidth = 1.dp.toPx())
+                        drawLine(gridColor, Offset(0f, size.height * 2f / 3f), Offset(size.width, size.height * 2f / 3f), strokeWidth = 1.dp.toPx())
+                    }
+                }
+
+                // Controls: Zoom Slider and Buttons
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Ukuran / Zoom",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "${(zoom * 100).toInt()}%",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        IconButton(
+                            onClick = { zoom = (zoom - 0.15f).coerceAtLeast(0.8f) },
+                            modifier = Modifier.size(34.dp).testTag("btn_zoom_out_cover")
+                        ) {
+                            Icon(Icons.Default.ZoomOut, contentDescription = "Perkecil", modifier = Modifier.size(18.dp))
+                        }
+
+                        Slider(
+                            value = zoom,
+                            onValueChange = { zoom = it },
+                            valueRange = 0.8f..4.0f,
+                            modifier = Modifier.weight(1f).testTag("slider_cover_zoom")
+                        )
+
+                        IconButton(
+                            onClick = { zoom = (zoom + 0.15f).coerceAtMost(4.0f) },
+                            modifier = Modifier.size(34.dp).testTag("btn_zoom_in_cover")
+                        ) {
+                            Icon(Icons.Default.ZoomIn, contentDescription = "Perbesar", modifier = Modifier.size(18.dp))
+                        }
+                    }
+
+                    // Toolbar buttons: Rotate, Center, Reset
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { rotation = (rotation + 90) % 360 },
+                            modifier = Modifier.weight(1f).height(38.dp).testTag("btn_rotate_cover"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.RotateRight, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Putar", fontSize = 11.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                panX = 0f
+                                panY = 0f
+                            },
+                            modifier = Modifier.weight(1f).height(38.dp).testTag("btn_center_cover"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.FilterCenterFocus, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Tengah", fontSize = 11.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                zoom = 1.0f
+                                panX = 0f
+                                panY = 0f
+                                rotation = 0
+                            },
+                            modifier = Modifier.weight(1f).height(38.dp).testTag("btn_reset_cover"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Reset", fontSize = 11.sp)
+                        }
+                    }
+                }
+
+                // Action buttons: Cancel & Apply
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f).height(46.dp).testTag("btn_cancel_cover_adjust"),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Batal", fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Button(
+                        onClick = {
+                            onApply(zoom, panX, panY, rotation, boxSizePx)
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        modifier = Modifier.weight(1.3f).height(46.dp).testTag("btn_apply_cover_adjust"),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Terapkan Cover", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+            }
         }
     }
 }

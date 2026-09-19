@@ -3,6 +3,9 @@ package com.example.audio
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Matrix
+import android.graphics.Paint
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
@@ -13,6 +16,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.RandomAccessFile
 
 object AudioTagManager {
     private const val TAG = "AudioTagManager"
@@ -133,6 +137,104 @@ object AudioTagManager {
     }
 
     /**
+     * Loads a Bitmap safely from a content URI without stream exhaustion.
+     */
+    suspend fun loadBitmapFromUri(context: Context, uri: Uri, maxDimension: Int = 2048): Bitmap? = withContext(Dispatchers.IO) {
+        try {
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@withContext null
+            loadBitmapFromBytes(bytes, maxDimension)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading bitmap from URI: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Loads and downsamples a Bitmap safely from byte array.
+     */
+    fun loadBitmapFromBytes(bytes: ByteArray, maxDimension: Int = 2048): Bitmap? {
+        try {
+            if (bytes.isEmpty()) return null
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            if (options.outWidth <= 0 || options.outHeight <= 0) return null
+
+            var sampleSize = 1
+            while (options.outWidth / (sampleSize * 2) >= maxDimension || options.outHeight / (sampleSize * 2) >= maxDimension) {
+                sampleSize *= 2
+            }
+
+            val decodeOpts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error decoding bitmap from bytes: ${e.message}", e)
+            return null
+        }
+    }
+
+    /**
+     * Crops and compresses a Bitmap into a 1:1 square album cover JPEG based on interactive user adjustments.
+     *
+     * @param source The source Bitmap
+     * @param scale Current scale factor (applied on top of base scale that fills the box)
+     * @param panX Horizontal translation in preview box coordinates
+     * @param panY Vertical translation in preview box coordinates
+     * @param rotationDegrees Rotation angle (0, 90, 180, 270)
+     * @param previewBoxSize The pixel dimension of the square preview box on screen
+     * @param outputDimension The target square resolution (default 800x800)
+     */
+    suspend fun cropSquareCover(
+        source: Bitmap,
+        scale: Float,
+        panX: Float,
+        panY: Float,
+        rotationDegrees: Int,
+        previewBoxSize: Float,
+        outputDimension: Int = 800
+    ): Pair<ByteArray, String> = withContext(Dispatchers.Default) {
+        val outputBitmap = Bitmap.createBitmap(outputDimension, outputDimension, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(outputBitmap)
+        // Background color in case of margins
+        canvas.drawColor(android.graphics.Color.BLACK)
+
+        val matrix = Matrix()
+        // 1. Center the source image at origin
+        matrix.postTranslate(-source.width / 2f, -source.height / 2f)
+
+        // 2. Rotate
+        if (rotationDegrees != 0) {
+            matrix.postRotate(rotationDegrees.toFloat())
+        }
+
+        // 3. Compute base scale that fills preview box
+        val effectiveW = if (rotationDegrees % 180 == 0) source.width.toFloat() else source.height.toFloat()
+        val effectiveH = if (rotationDegrees % 180 == 0) source.height.toFloat() else source.width.toFloat()
+        val baseScale = (previewBoxSize / effectiveW.coerceAtLeast(1f)).coerceAtLeast(previewBoxSize / effectiveH.coerceAtLeast(1f))
+        val currentScale = baseScale * scale
+
+        // 4. Scale to output dimension
+        val outputRatio = outputDimension.toFloat() / previewBoxSize.coerceAtLeast(1f)
+        val finalScale = currentScale * outputRatio
+        matrix.postScale(finalScale, finalScale)
+
+        // 5. Apply pan offset and center in output canvas
+        val outputPanX = panX * outputRatio
+        val outputPanY = panY * outputRatio
+        matrix.postTranslate(outputDimension / 2f + outputPanX, outputDimension / 2f + outputPanY)
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        canvas.drawBitmap(source, matrix, paint)
+
+        val bos = ByteArrayOutputStream()
+        outputBitmap.compress(Bitmap.CompressFormat.JPEG, 90, bos)
+        outputBitmap.recycle()
+        Pair(bos.toByteArray(), "image/jpeg")
+    }
+
+    /**
      * Resizes and compresses an image from URI for use as embedded album cover art.
      */
     suspend fun processImageForCover(
@@ -141,31 +243,8 @@ object AudioTagManager {
         maxDimension: Int = 800
     ): Pair<ByteArray, String>? = withContext(Dispatchers.IO) {
         try {
-            // First pass: decode bounds
-            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(imageUri)?.use { input ->
-                BitmapFactory.decodeStream(input, null, options)
-            } ?: return@withContext null
-
-            val width = options.outWidth
-            val height = options.outHeight
-            if (width <= 0 || height <= 0) return@withContext null
-
-            var inSampleSize = 1
-            while (width / (inSampleSize * 2) >= maxDimension && height / (inSampleSize * 2) >= maxDimension) {
-                inSampleSize *= 2
-            }
-
-            // Second pass: decode actual bitmap
-            val decodeOptions = BitmapFactory.Options().apply {
-                this.inSampleSize = inSampleSize
-                inPreferredConfig = Bitmap.Config.ARGB_8888
-            }
-            val bitmap = context.contentResolver.openInputStream(imageUri)?.use { input ->
-                BitmapFactory.decodeStream(input, null, decodeOptions)
-            } ?: return@withContext null
-
-            // Scale if still larger than maxDimension
+            val bitmap = loadBitmapFromUri(context, imageUri, maxDimension) ?: return@withContext null
+            // Scale if larger than maxDimension
             val scaledBitmap = if (bitmap.width > maxDimension || bitmap.height > maxDimension) {
                 val ratio = bitmap.width.toFloat() / bitmap.height.toFloat()
                 val targetW: Int
@@ -185,10 +264,9 @@ object AudioTagManager {
             }
 
             val bos = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 85, bos)
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 90, bos)
             scaledBitmap.recycle()
-            val bytes = bos.toByteArray()
-            return@withContext Pair(bytes, "image/jpeg")
+            Pair(bos.toByteArray(), "image/jpeg")
         } catch (e: Exception) {
             Log.e(TAG, "Error processing cover image: ${e.message}", e)
             null
@@ -208,47 +286,45 @@ object AudioTagManager {
             var audioStart = 0L
             var audioEnd = sourceFile.length()
 
-            // 1. Detect existing ID3v2 header at the start
-            FileInputStream(sourceFile).use { fis ->
-                val header = ByteArray(10)
-                val read = fis.read(header)
-                if (read == 10 &&
-                    header[0] == 'I'.code.toByte() &&
-                    header[1] == 'D'.code.toByte() &&
-                    header[2] == '3'.code.toByte()
-                ) {
-                    val flags = header[5].toInt()
-                    val tagSize = parseSynchsafe(header, 6)
-                    audioStart = 10L + tagSize
-                    // ID3v2.4 footer flag check
-                    if ((flags and 0x10) != 0) {
-                        audioStart += 10L
+            // 1. Detect existing ID3v2 header and ID3v1 footer safely using RandomAccessFile
+            RandomAccessFile(sourceFile, "r").use { raf ->
+                val len = raf.length()
+                if (len >= 10) {
+                    val header = ByteArray(10)
+                    raf.readFully(header)
+                    if (header[0] == 'I'.code.toByte() &&
+                        header[1] == 'D'.code.toByte() &&
+                        header[2] == '3'.code.toByte()
+                    ) {
+                        val flags = header[5].toInt()
+                        val tagSize = parseSynchsafe(header, 6)
+                        audioStart = 10L + tagSize
+                        // ID3v2.4 footer flag check
+                        if ((flags and 0x10) != 0) {
+                            audioStart += 10L
+                        }
                     }
                 }
-            }
 
-            // 2. Detect existing ID3v1 tag at the end (128 bytes)
-            if (audioEnd - audioStart > 128) {
-                FileInputStream(sourceFile).use { fis ->
-                    fis.skip(audioEnd - 128)
+                if (len - audioStart > 128) {
+                    raf.seek(len - 128)
                     val tagBytes = ByteArray(3)
-                    val read = fis.read(tagBytes)
-                    if (read == 3 &&
-                        tagBytes[0] == 'T'.code.toByte() &&
+                    raf.readFully(tagBytes)
+                    if (tagBytes[0] == 'T'.code.toByte() &&
                         tagBytes[1] == 'A'.code.toByte() &&
                         tagBytes[2] == 'G'.code.toByte()
                     ) {
-                        audioEnd -= 128
+                        audioEnd = len - 128
                     }
                 }
             }
 
-            if (audioStart >= audioEnd) {
+            if (audioStart >= audioEnd || audioStart < 0) {
                 audioStart = 0L
                 audioEnd = sourceFile.length()
             }
 
-            // 3. Assemble all ID3v2.3 frames
+            // 2. Assemble all ID3v2.3 frames
             val framesStream = ByteArrayOutputStream()
             framesStream.write(buildTextFrame("TIT2", metadata.title))
             framesStream.write(buildTextFrame("TPE1", metadata.artist))
@@ -270,7 +346,7 @@ object AudioTagManager {
             val framesData = framesStream.toByteArray()
             val tagSize = framesData.size
 
-            // 4. Construct ID3v2.3 10-byte header
+            // 3. Construct ID3v2.3 10-byte header
             val id3Header = ByteArray(10)
             id3Header[0] = 'I'.code.toByte()
             id3Header[1] = 'D'.code.toByte()
@@ -281,7 +357,7 @@ object AudioTagManager {
             val synchsafe = toSynchsafe(tagSize)
             System.arraycopy(synchsafe, 0, id3Header, 6, 4)
 
-            // 5. Write to destination file
+            // 4. Write to destination file
             val tempOutput = if (outputFile.absolutePath == sourceFile.absolutePath) {
                 File(outputFile.parentFile, "tmp_tag_${System.currentTimeMillis()}.mp3")
             } else {
@@ -292,16 +368,14 @@ object AudioTagManager {
                 fos.write(id3Header)
                 fos.write(framesData)
 
-                // Copy audio payload
-                FileInputStream(sourceFile).use { fis ->
-                    if (audioStart > 0) {
-                        fis.skip(audioStart)
-                    }
+                // Copy audio payload with exact RandomAccessFile seek
+                RandomAccessFile(sourceFile, "r").use { raf ->
+                    raf.seek(audioStart)
                     var remaining = audioEnd - audioStart
-                    val buffer = ByteArray(32768)
+                    val buffer = ByteArray(65536)
                     while (remaining > 0) {
                         val toRead = buffer.size.toLong().coerceAtMost(remaining).toInt()
-                        val read = fis.read(buffer, 0, toRead)
+                        val read = raf.read(buffer, 0, toRead)
                         if (read <= 0) break
                         fos.write(buffer, 0, read)
                         remaining -= read
