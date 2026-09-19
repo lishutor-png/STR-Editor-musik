@@ -63,10 +63,8 @@ fun MergeScreen(
 ) {
     val mergeTracks by viewModel.mergeTracks.collectAsState()
     val mergeGapMs by viewModel.mergeGapMs.collectAsState()
-    val sampleTracks by viewModel.sampleTracks.collectAsState()
 
     var showExportDialog by remember { mutableStateOf(false) }
-    var showSampleDialog by remember { mutableStateOf(false) }
 
     val totalDurationMs = mergeTracks.sumOf { it.durationMs } +
             ((mergeTracks.size - 1).coerceAtLeast(0) * mergeGapMs)
@@ -124,42 +122,22 @@ fun MergeScreen(
                     }
                 }
 
-                // Add buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                // Add file button
+                Button(
+                    onClick = onOpenFilePicker,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                        .testTag("btn_merge_add_file")
                 ) {
-                    Button(
-                        onClick = onOpenFilePicker,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("btn_merge_add_file")
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Buka File", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-
-                    Button(
-                        onClick = { showSampleDialog = true },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            contentColor = MaterialTheme.colorScheme.onSurface
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("btn_merge_add_sample")
-                    ) {
-                        Icon(Icons.Default.LibraryMusic, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Lagu Contoh", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Tambah File Audio Ke Antrean", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 }
             }
         }
@@ -233,7 +211,7 @@ fun MergeScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Tekan 'Buka File' atau 'Lagu Contoh' untuk menambahkan lagu yang ingin digabungkan.",
+                        text = "Tekan 'Tambah File Audio' di atas untuk memilih lagu-lagu yang ingin digabungkan.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -421,52 +399,6 @@ fun MergeScreen(
                 }
             }
         }
-    }
-
-    // Sample Picker Dialog
-    if (showSampleDialog) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showSampleDialog = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-            title = { Text("Pilih Lagu Contoh", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    sampleTracks.forEach { sample ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .clickable {
-                                    viewModel.addTrackToMerge(sample)
-                                    showSampleDialog = false
-                                }
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Icon(Icons.Default.Audiotrack, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                Column {
-                                    Text(sample.title, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                    Text(TimeFormatUtils.formatDuration(sample.durationMs), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                                }
-                            }
-                            Icon(Icons.Default.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showSampleDialog = false }) {
-                    Text("Tutup", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        )
     }
 
     if (showExportDialog) {

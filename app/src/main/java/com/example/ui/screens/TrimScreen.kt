@@ -52,6 +52,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -83,10 +84,7 @@ fun TrimScreen(
     val currentPositionMs by viewModel.player.currentPositionMs.collectAsState()
     val isLooping by viewModel.player.isLooping.collectAsState()
 
-    val sampleTracks by viewModel.sampleTracks.collectAsState()
-
     var showExportDialog by remember { mutableStateOf(false) }
-    var showSamplePicker by remember { mutableStateOf(false) }
 
     val durationMs = activePcm?.durationMs ?: 0L
     val selectedDurationMs = (endMs - startMs).coerceAtLeast(0L)
@@ -137,7 +135,7 @@ fun TrimScreen(
 
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = activeTrack?.title ?: "Belum ada trek",
+                                text = activeTrack?.title ?: "Belum ada lagu dipilih",
                                 color = MaterialTheme.colorScheme.onSurface,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
@@ -146,126 +144,99 @@ fun TrimScreen(
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
-                                    text = TimeFormatUtils.formatDuration(durationMs),
+                                    text = if (activeTrack != null) TimeFormatUtils.formatDuration(durationMs) else "Pilih file untuk diedit",
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 12.sp
                                 )
-                                Text("•", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), fontSize = 12.sp)
-                                Text(
-                                    text = activeTrack?.format ?: "AUDIO",
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                if (activeTrack?.isSample == true) {
+                                if (activeTrack != null) {
                                     Text("•", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), fontSize = 12.sp)
                                     Text(
-                                        text = "Sample",
-                                        color = MaterialTheme.colorScheme.tertiary,
+                                        text = activeTrack?.format ?: "AUDIO",
+                                        color = MaterialTheme.colorScheme.primary,
                                         fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
+                                        fontWeight = FontWeight.SemiBold
                                     )
                                 }
                             }
                         }
                     }
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        IconButton(
-                            onClick = { showSamplePicker = !showSamplePicker },
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.surface)
-                                .testTag("btn_sample_picker")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.LibraryMusic,
-                                contentDescription = "Pilih Demo Sample",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-
-                        Button(
-                            onClick = onOpenFilePicker,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.testTag("btn_open_file")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FolderOpen,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text("Buka", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                // Sample Picker Drawer (if expanded)
-                if (showSamplePicker && sampleTracks.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    Button(
+                        onClick = onOpenFilePicker,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.testTag("btn_open_file")
                     ) {
-                        Text(
-                            text = "Pilih Lagu Contoh:",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
+                        Icon(
+                            imageVector = Icons.Default.FolderOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
                         )
-                        sampleTracks.forEach { sample ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        viewModel.loadTrack(sample)
-                                        showSamplePicker = false
-                                    }
-                                    .background(
-                                        if (activeTrack?.id == sample.id) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                                        else Color.Transparent
-                                    )
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Audiotrack,
-                                        contentDescription = null,
-                                        tint = if (activeTrack?.id == sample.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Text(
-                                        text = sample.title,
-                                        color = if (activeTrack?.id == sample.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
-                                Text(
-                                    text = TimeFormatUtils.formatDuration(sample.durationMs),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
+                        Spacer(Modifier.width(6.dp))
+                        Text("Buka File", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
+
+        if (activeTrack == null) {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Audiotrack,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                    Text(
+                        text = "Belum Ada Lagu Dipilih",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Silakan ketuk tombol 'Buka File' untuk memilih lagu (MP3, WAV, M4A, FLAC) dari penyimpanan HP Anda untuk mulai memotong.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 18.sp
+                    )
+                    Button(
+                        onClick = onOpenFilePicker,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Pilih Lagu Dari Penyimpanan", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        } else {
 
         // Interactive Waveform Visualizer
         Card(
@@ -673,6 +644,7 @@ fun TrimScreen(
                 fontWeight = FontWeight.Bold
             )
         }
+        } // end if (activeTrack != null)
 
         Spacer(Modifier.height(16.dp))
     }

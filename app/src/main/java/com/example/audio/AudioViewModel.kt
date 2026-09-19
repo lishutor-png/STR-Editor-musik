@@ -105,26 +105,14 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
     val libraryPlayingPath: StateFlow<String?> = _libraryPlayingPath.asStateFlow()
 
     init {
-        loadSamplesAndLibrary()
+        // Clear any previous sample tracks so app starts completely clean and empty as requested
+        SampleAudioGenerator.deleteSampleTracks(getApplication())
+        _sampleTracks.value = emptyList()
+        refreshExportedLibrary()
     }
 
     fun clearStatusMessage() {
         _statusMessage.value = null
-    }
-
-    private fun loadSamplesAndLibrary() {
-        viewModelScope.launch {
-            try {
-                val samples = SampleAudioGenerator.getOrCreateSampleTracks(getApplication())
-                _sampleTracks.value = samples
-                if (_activeTrack.value == null && samples.isNotEmpty()) {
-                    loadTrack(samples[0])
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed loading sample tracks: ${e.message}")
-            }
-            refreshExportedLibrary()
-        }
     }
 
     fun refreshExportedLibrary() {

@@ -11,6 +11,15 @@ import kotlin.math.sin
 
 object SampleAudioGenerator {
 
+    fun deleteSampleTracks(context: Context) {
+        try {
+            val sampleDir = File(context.cacheDir, "sample_audio")
+            if (sampleDir.exists()) {
+                sampleDir.deleteRecursively()
+            }
+        } catch (_: Exception) {}
+    }
+
     suspend fun getOrCreateSampleTracks(context: Context): List<AudioTrackInfo> = withContext(Dispatchers.IO) {
         val sampleDir = File(context.cacheDir, "sample_audio")
         if (!sampleDir.exists()) sampleDir.mkdirs()

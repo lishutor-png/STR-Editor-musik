@@ -15,13 +15,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Transform
@@ -47,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.audio.AudioFormat
@@ -63,7 +64,6 @@ fun ConverterScreen(
     val activeTrack by viewModel.activeTrack.collectAsState()
     val converterFormat by viewModel.converterFormat.collectAsState()
     val converterBitrate by viewModel.converterBitrate.collectAsState()
-    val sampleTracks by viewModel.sampleTracks.collectAsState()
 
     var outputFileName by remember(activeTrack) {
         mutableStateOf(activeTrack?.title?.replace(" ", "_") ?: "audio_konversi")
@@ -101,7 +101,7 @@ fun ConverterScreen(
                     )
                     Column {
                         Text(
-                            text = "Konversi Format Audio Cepat",
+                            text = "Konversi Format Audio",
                             color = MaterialTheme.colorScheme.onSurface,
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold
@@ -115,48 +115,70 @@ fun ConverterScreen(
                 }
 
                 // Choose track
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Button(
+                    onClick = onOpenFilePicker,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                        .testTag("btn_convert_pick_file")
                 ) {
-                    Button(
-                        onClick = onOpenFilePicker,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f).testTag("btn_convert_pick_file")
-                    ) {
-                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Buka File", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-
-                    if (sampleTracks.isNotEmpty()) {
-                        Button(
-                            onClick = {
-                                viewModel.selectTrackForConverter(sampleTracks[0])
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                contentColor = MaterialTheme.colorScheme.onSurface
-                            ),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1f).testTag("btn_convert_use_sample")
-                        ) {
-                            Icon(Icons.Default.LibraryMusic, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Gunakan Sample", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        }
-                    }
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Pilih File Audio Dari HP", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 }
             }
         }
 
-        // Selected Source Info
+        // Selected Source Info or Empty State
         val selected = activeTrack
-        if (selected != null) {
+        if (selected == null) {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SwapHoriz,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                    Text(
+                        text = "Belum Ada File Audio Dipilih",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    Text(
+                        text = "Silakan tekan tombol 'Pilih File Audio Dari HP' di atas untuk memilih lagu yang ingin diubah formatnya (MP3, WAV, M4A, FLAC).",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 18.sp
+                    )
+                }
+            }
+        } else {
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -199,7 +221,6 @@ fun ConverterScreen(
                     }
                 }
             }
-        }
 
         // Format Selection
         Card(
@@ -370,5 +391,6 @@ fun ConverterScreen(
                 fontWeight = FontWeight.Bold
             )
         }
+        } // end if (selected != null)
     }
 }
