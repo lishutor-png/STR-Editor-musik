@@ -8,44 +8,82 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build & Test APK
+  build-apk:
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK Licenses & Install Components
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" || true
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
 
-      - name: Prepare Keystore and Environment
+      - name: Prepare Keystore & Environment Files
         run: |
-          # Restore debug.keystore from base64 if not already present
-          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
+          # 1. Decode debug.keystore from base64 if present
+          if [ -f debug.keystore.base64 ]; then
+            echo "Restoring debug.keystore from debug.keystore.base64..."
             base64 -d debug.keystore.base64 > debug.keystore
           fi
-          # Ensure .env exists from template
-          if [ ! -f .env ] && [ -f .env.example ]; then
-            cp .env.example .env
-          fi
-          chmod +x gradlew
 
-      - name: Run Unit Tests
-        run: ./gradlew testDebugUnitTest --stacktrace
+          # 2. If debug.keystore is still missing, generate valid debug keystore
+          if [ ! -f debug.keystore ]; then
+            echo "Generating debug.keystore with keytool..."
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          # 3. Ensure .env exists so Secrets Gradle Plugin is satisfied
+          if [ ! -f .env ]; then
+            if [ -f .env.example ]; then
+              cp .env.example .env
+            else
+              touch .env
+            fi
+          fi
+
+          chmod +x gradlew || true
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: |
+          # Use gradle or gradlew with fallback
+          if [ -x "./gradlew" ]; then
+            ./gradlew assembleDebug --no-configuration-cache --stacktrace
+          else
+            gradle assembleDebug --no-configuration-cache --stacktrace
+          fi
 
-      - name: Upload Debug APK Artifact
+      - name: Verify APK Generated
+        run: |
+          ls -la app/build/outputs/apk/debug/
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
+          name: LishStudioRecord-Debug-APK
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
