@@ -2,50 +2,40 @@ name: Android CI Build
 
 on:
   push:
-    branches: [ "main", "master" ]
   pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
-  build-apk:
-    name: Build Android APK
+  build:
+    name: Build APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      - name: Set up Java JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK Licenses & Install Components
-        run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" || true
-
-      - name: Setup Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      - name: Prepare Keystore & Environment Files
+      - name: Prepare Keystore & Environment
         run: |
           # 1. Decode debug.keystore from base64 if present
           if [ -f debug.keystore.base64 ]; then
-            echo "Restoring debug.keystore from debug.keystore.base64..."
+            echo "Restoring debug.keystore from base64..."
             base64 -d debug.keystore.base64 > debug.keystore
           fi
 
-          # 2. If debug.keystore is still missing, generate valid debug keystore
+          # 2. If debug.keystore still does not exist, generate a standard debug keystore
           if [ ! -f debug.keystore ]; then
-            echo "Generating debug.keystore with keytool..."
+            echo "Generating fallback debug.keystore..."
             keytool -genkeypair -v \
               -keystore debug.keystore \
               -storepass android \
@@ -57,7 +47,7 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-          # 3. Ensure .env exists so Secrets Gradle Plugin is satisfied
+          # 3. Ensure .env exists for secrets plugin
           if [ ! -f .env ]; then
             if [ -f .env.example ]; then
               cp .env.example .env
@@ -66,24 +56,24 @@ jobs:
             fi
           fi
 
+          # 4. Accept Android SDK licenses if sdkmanager exists
+          if [ -n "$ANDROID_HOME" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          fi
+
           chmod +x gradlew || true
 
       - name: Build Debug APK
         run: |
-          # Use gradle or gradlew with fallback
-          if [ -x "./gradlew" ]; then
-            ./gradlew assembleDebug --no-configuration-cache --stacktrace
-          else
-            gradle assembleDebug --no-configuration-cache --stacktrace
-          fi
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Verify APK Generated
+      - name: Check APK Output
         run: |
           ls -la app/build/outputs/apk/debug/
 
-      - name: Upload Debug APK
+      - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LishStudioRecord-Debug-APK
+          name: LishStudioRecord-APK
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
