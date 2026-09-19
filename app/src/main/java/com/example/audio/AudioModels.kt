@@ -117,3 +117,56 @@ data class ExportedAudio(
     val format: AudioFormat,
     val dateModified: Long
 )
+
+/**
+ * Detailed metadata information for song/ID3 tag editing.
+ */
+data class SongMetadata(
+    val title: String = "",
+    val artist: String = "",
+    val album: String = "",
+    val albumArtist: String = "",
+    val genre: String = "",
+    val year: String = "",
+    val trackNumber: String = "",
+    val composer: String = "",
+    val comment: String = "",
+    val coverArtBytes: ByteArray? = null,
+    val coverMimeType: String = "image/jpeg",
+    val durationMs: Long = 0L,
+    val bitrateKbps: Int = 0,
+    val sampleRate: Int = 44100,
+    val format: String = "MP3",
+    val originalFileName: String = "",
+    val originalFilePath: String? = null,
+    val originalUri: Uri? = null
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+        other as SongMetadata
+        if (title != other.title) return false
+        if (artist != other.artist) return false
+        if (album != other.album) return false
+        if (albumArtist != other.albumArtist) return false
+        if (genre != other.genre) return false
+        if (year != other.year) return false
+        if (trackNumber != other.trackNumber) return false
+        if (composer != other.composer) return false
+        if (comment != other.comment) return false
+        if (coverMimeType != other.coverMimeType) return false
+        if (coverArtBytes != null) {
+            if (other.coverArtBytes == null) return false
+            if (!coverArtBytes.contentEquals(other.coverArtBytes)) return false
+        } else if (other.coverArtBytes != null) return false
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = title.hashCode()
+        result = 31 * result + artist.hashCode()
+        result = 31 * result + album.hashCode()
+        result = 31 * result + (coverArtBytes?.contentHashCode() ?: 0)
+        return result
+    }
+}

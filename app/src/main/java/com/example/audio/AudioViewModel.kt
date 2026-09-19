@@ -17,11 +17,22 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 
 class AudioViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "AudioViewModel"
 
     val player = RealtimeAudioPlayer(viewModelScope)
+
+    // Tag Editor & Song Information State
+    private val _tagMetadata = MutableStateFlow<SongMetadata?>(null)
+    val tagMetadata: StateFlow<SongMetadata?> = _tagMetadata.asStateFlow()
+
+    private val _selectedTagFile = MutableStateFlow<File?>(null)
+    val selectedTagFile: StateFlow<File?> = _selectedTagFile.asStateFlow()
+
+    private val _selectedTagUri = MutableStateFlow<Uri?>(null)
+    val selectedTagUri: StateFlow<Uri?> = _selectedTagUri.asStateFlow()
 
     // Current active track for Editing / Trimming
     private val _activeTrack = MutableStateFlow<AudioTrackInfo?>(null)
@@ -652,6 +663,135 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
             ?: File(app.filesDir, "exported_audio")
         if (!dir.exists()) dir.mkdirs()
         return dir
+    }
+
+    // --- Tag Editor Operations ---
+    fun loadTagFromUri(uri: Uri) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            _processingStatus.value = "Membaca informasi lagu..."
+            _processingProgress.value = 0.4f
+            try {
+                val app = getApplication<Application>()
+                val tempFile = File(app.cacheDir, "tag_edit_temp_${System.currentTimeMillis()}.mp3")
+                app.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(tempFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                val meta = AudioTagManager.readMetadata(app, uri, tempFile)
+                _selectedTagFile.value = tempFile
+                _selectedTagUri.value = uri
+                _tagMetadata.value = meta
+                _statusMessage.value = "File berhasil dimuat: ${meta.title.ifBlank { "Audio" }}"
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed loading tag metadata: ${e.message}")
+                _statusMessage.value = "Gagal membaca info lagu: ${e.message}"
+            } finally {
+                _isProcessing.value = false
+            }
+        }
+    }
+
+    fun loadTagFromFile(file: File) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            _processingStatus.value = "Membaca informasi lagu..."
+            _processingProgress.value = 0.4f
+            try {
+                val app = getApplication<Application>()
+                val meta = AudioTagManager.readMetadata(app, null, file)
+                _selectedTagFile.value = file
+                _selectedTagUri.value = null
+                _tagMetadata.value = meta
+                _statusMessage.value = "Memuat tag: ${meta.title.ifBlank { file.nameWithoutExtension }}"
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed loading tag metadata from file: ${e.message}")
+                _statusMessage.value = "Gagal membaca info file: ${e.message}"
+            } finally {
+                _isProcessing.value = false
+            }
+        }
+    }
+
+    fun updateSongMetadata(updated: SongMetadata) {
+        _tagMetadata.value = updated
+    }
+
+    fun updateCoverArt(bytes: ByteArray, mimeType: String = "image/jpeg") {
+        _tagMetadata.value = _tagMetadata.value?.copy(
+            coverArtBytes = bytes,
+            coverMimeType = mimeType
+        )
+        _statusMessage.value = "Gambar cover diperbarui"
+    }
+
+    fun removeCoverArt() {
+        _tagMetadata.value = _tagMetadata.value?.copy(
+            coverArtBytes = null
+        )
+        _statusMessage.value = "Gambar cover dihapus"
+    }
+
+    fun saveSongMetadata(customFileName: String? = null, onComplete: ((File) -> Unit)? = null) {
+        val currentMeta = _tagMetadata.value ?: return
+        val currentFile = _selectedTagFile.value ?: return
+        val app = getApplication<Application>()
+
+        viewModelScope.launch {
+            _isProcessing.value = true
+            _processingStatus.value = "Menyimpan informasi & cover lagu..."
+            _processingProgress.value = 0.25f
+
+            try {
+                val safeName = if (!customFileName.isNullOrBlank()) {
+                    customFileName.trim().replace(Regex("[^a-zA-Z0-9_\\-\\s]"), "_")
+                } else if (currentMeta.title.isNotBlank()) {
+                    val combined = if (currentMeta.artist.isNotBlank()) {
+                        "${currentMeta.artist} - ${currentMeta.title}"
+                    } else {
+                        currentMeta.title
+                    }
+                    combined.replace(Regex("[^a-zA-Z0-9_\\-\\s]"), "_")
+                } else {
+                    "lagu_edited_${System.currentTimeMillis()}"
+                }
+
+                val exportDir = getExportDirectory()
+                val targetFile = File(exportDir, "$safeName.mp3")
+
+                _processingProgress.value = 0.6f
+                val isMp3 = currentFile.name.endsWith(".mp3", true) || currentMeta.format.equals("MP3", true)
+                val success = if (isMp3) {
+                    AudioTagManager.writeMp3Tags(currentFile, targetFile, currentMeta)
+                } else {
+                    val pcm = AudioDecoder.decode(app, currentFile)
+                    val rawMp3 = File(app.cacheDir, "temp_encode_${System.currentTimeMillis()}.mp3")
+                    AudioEncoder.encode(pcm, rawMp3, ExportOptions(format = AudioFormat.MP3, bitrateKbps = 192))
+                    val res = AudioTagManager.writeMp3Tags(rawMp3, targetFile, currentMeta)
+                    rawMp3.delete()
+                    res
+                }
+
+                if (success && targetFile.exists() && targetFile.length() > 0) {
+                    refreshExportedLibrary()
+                    _statusMessage.value = "Informasi & cover lagu berhasil disimpan ke Koleksi!"
+                    _tagMetadata.value = currentMeta.copy(
+                        originalFilePath = targetFile.absolutePath,
+                        originalFileName = targetFile.name
+                    )
+                    _selectedTagFile.value = targetFile
+                    onComplete?.invoke(targetFile)
+                } else {
+                    _statusMessage.value = "Gagal menyimpan info lagu."
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error saving song metadata: ${e.message}", e)
+                _statusMessage.value = "Gagal menyimpan: ${e.message}"
+            } finally {
+                _isProcessing.value = false
+            }
+        }
     }
 
     override fun onCleared() {

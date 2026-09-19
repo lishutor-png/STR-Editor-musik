@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -51,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import com.example.audio.AudioFormat
 import com.example.audio.AudioViewModel
 import com.example.ui.components.TimeFormatUtils
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,6 +60,7 @@ import java.util.Locale
 @Composable
 fun LibraryScreen(
     viewModel: AudioViewModel,
+    onNavigateToTagEditor: (File) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -372,6 +375,39 @@ fun LibraryScreen(
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
                                             text = "Simpan ke HP",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+
+                                // Edit Info & Cover Lagu Button
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MaterialTheme.colorScheme.surface)
+                                        .clickable {
+                                            onNavigateToTagEditor(item.file)
+                                        }
+                                        .padding(vertical = 6.dp, horizontal = 10.dp)
+                                        .testTag("btn_edit_tags_${item.title}"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.EditNote,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "Edit Tag",
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = MaterialTheme.colorScheme.onSurface

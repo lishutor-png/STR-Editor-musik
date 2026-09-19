@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallMerge
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.LightMode
@@ -76,12 +77,14 @@ import com.example.audio.AudioViewModel
 import com.example.ui.screens.ConverterScreen
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.MergeScreen
+import com.example.ui.screens.TagEditorScreen
 import com.example.ui.screens.TrimScreen
 import com.example.ui.theme.MyApplicationTheme
 
 enum class StudioTab(val title: String, val icon: ImageVector) {
     TRIM("Potong", Icons.Default.ContentCut),
     MERGE("Gabung", Icons.AutoMirrored.Filled.CallMerge),
+    TAGS("Info Lagu", Icons.Default.EditNote),
     CONVERT("Format", Icons.Default.SwapHoriz),
     LIBRARY("Koleksi", Icons.Default.FolderSpecial)
 }
@@ -127,6 +130,13 @@ fun AudioEditorApp(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         uri?.let { viewModel.loadTrackFromUri(it) }
+    }
+
+    // File picker launcher for Tag Editor
+    val tagFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let { viewModel.loadTagFromUri(it) }
     }
 
     // File picker launcher for multiple tracks (Merge queue)
@@ -185,12 +195,20 @@ fun AudioEditorApp(
                     viewModel = viewModel,
                     onOpenFilePicker = { multipleFilesPickerLauncher.launch(arrayOf("audio/*")) }
                 )
-                2 -> ConverterScreen(
+                2 -> TagEditorScreen(
+                    viewModel = viewModel,
+                    onOpenFilePicker = { tagFilePickerLauncher.launch(arrayOf("audio/*")) }
+                )
+                3 -> ConverterScreen(
                     viewModel = viewModel,
                     onOpenFilePicker = { singleFilePickerLauncher.launch(arrayOf("audio/*")) }
                 )
-                3 -> LibraryScreen(
-                    viewModel = viewModel
+                4 -> LibraryScreen(
+                    viewModel = viewModel,
+                    onNavigateToTagEditor = { file ->
+                        viewModel.loadTagFromFile(file)
+                        selectedTab = 2
+                    }
                 )
             }
 
@@ -268,7 +286,7 @@ fun StudioTopBar(
                         }
                     }
                     Text(
-                        text = "Potong • Gabung • Format • Equalizer",
+                        text = "Potong • Gabung • Info Lagu • Format",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp
                     )
