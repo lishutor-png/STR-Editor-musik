@@ -10,6 +10,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
 import android.net.Uri
+import java.io.File
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -62,6 +63,7 @@ import androidx.compose.material.icons.filled.SaveAs
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -121,6 +123,7 @@ private val QUICK_GENRES = listOf(
 fun TagEditorScreen(
     viewModel: AudioViewModel,
     onOpenFilePicker: () -> Unit,
+    onNavigateToLibrary: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -131,6 +134,7 @@ fun TagEditorScreen(
     var adjustingSourceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var showAdjustDialog by remember { mutableStateOf(false) }
     var isProcessingCover by remember { mutableStateOf(false) }
+    var showSaveSuccessDialog by remember { mutableStateOf<File?>(null) }
 
     // Direct helper to process and apply chosen image URI
     val processAndApplyUri: (Uri) -> Unit = { uri ->
@@ -228,7 +232,9 @@ fun TagEditorScreen(
             ActionButtonsSection(
                 metadata = metadata,
                 onSave = {
-                    viewModel.saveSongMetadata()
+                    viewModel.saveSongMetadata { savedFile ->
+                        showSaveSuccessDialog = savedFile
+                    }
                 },
                 onSaveAs = {
                     viewModel.saveSongMetadata { savedFile ->
@@ -287,6 +293,142 @@ fun TagEditorScreen(
                     isProcessingCover = false
                     showAdjustDialog = false
                     adjustingSourceBitmap = null
+                }
+            }
+        )
+    }
+
+    // Dialog: Confirmation of Successful Save with Cover Art
+    val savedTargetFile = showSaveSuccessDialog
+    if (savedTargetFile != null) {
+        val successCoverBitmap = remember(tagMetadata?.coverArtBytes) {
+            tagMetadata?.coverArtBytes?.let { bytes ->
+                try {
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { showSaveSuccessDialog = null },
+            shape = RoundedCornerShape(22.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            icon = {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            },
+            title = {
+                Text(
+                    text = "Cover & Info Berhasil Disimpan!",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    if (successCoverBitmap != null) {
+                        Image(
+                            bitmap = successCoverBitmap,
+                            contentDescription = "Cover Tersimpan",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(110.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(14.dp))
+                        )
+                    }
+
+                    Text(
+                        text = tagMetadata?.title?.ifBlank { savedTargetFile.nameWithoutExtension } ?: savedTargetFile.nameWithoutExtension,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+
+                    if (!tagMetadata?.artist.isNullOrBlank()) {
+                        Text(
+                            text = tagMetadata?.artist.orEmpty(),
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Lokasi Penyimpanan:",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "• Koleksi Musik Aplikasi",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "• Memori HP: Music/LishStudioRecord/${savedTargetFile.name}",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showSaveSuccessDialog = null
+                        onNavigateToLibrary()
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    modifier = Modifier.testTag("btn_view_in_library")
+                ) {
+                    Icon(Icons.Default.Album, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Lihat di Koleksi", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { showSaveSuccessDialog = null },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Tutup")
                 }
             }
         )

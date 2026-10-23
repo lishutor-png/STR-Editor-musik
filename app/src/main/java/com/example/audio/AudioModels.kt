@@ -115,7 +115,8 @@ data class ExportedAudio(
     val durationMs: Long,
     val sizeBytes: Long,
     val format: AudioFormat,
-    val dateModified: Long
+    val dateModified: Long,
+    val coverArtBytes: ByteArray? = null
 )
 
 /**

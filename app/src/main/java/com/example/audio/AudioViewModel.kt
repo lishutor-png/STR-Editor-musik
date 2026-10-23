@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 
 class AudioViewModel(application: Application) : AndroidViewModel(application) {
@@ -150,6 +151,7 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (e: Exception) {
                     0L
                 }
+                val coverBytes = AudioTagManager.extractCoverThumbnail(file)
 
                 ExportedAudio(
                     file = file,
@@ -157,7 +159,8 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
                     durationMs = duration,
                     sizeBytes = file.length(),
                     format = format,
-                    dateModified = file.lastModified()
+                    dateModified = file.lastModified(),
+                    coverArtBytes = coverBytes
                 )
             }
             _exportedFiles.value = list
@@ -673,7 +676,15 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
             _processingProgress.value = 0.4f
             try {
                 val app = getApplication<Application>()
-                val tempFile = File(app.cacheDir, "tag_edit_temp_${System.currentTimeMillis()}.mp3")
+                val mimeType = app.contentResolver.getType(uri)
+                val ext = when {
+                    mimeType?.contains("mp3", true) == true || mimeType?.contains("mpeg", true) == true -> "mp3"
+                    mimeType?.contains("wav", true) == true -> "wav"
+                    mimeType?.contains("m4a", true) == true || mimeType?.contains("mp4", true) == true || mimeType?.contains("aac", true) == true -> "m4a"
+                    mimeType?.contains("flac", true) == true -> "flac"
+                    else -> uri.lastPathSegment?.substringAfterLast('.', "")?.takeIf { it.isNotBlank() } ?: "mp3"
+                }
+                val tempFile = File(app.cacheDir, "tag_edit_temp_${System.currentTimeMillis()}.$ext")
                 app.contentResolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(tempFile).use { output ->
                         input.copyTo(output)
@@ -767,7 +778,7 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
                 val targetFile = File(exportDir, "$safeName.mp3")
 
                 _processingProgress.value = 0.6f
-                val isMp3 = currentFile.name.endsWith(".mp3", true) || currentMeta.format.equals("MP3", true)
+                val isMp3 = AudioTagManager.isMp3File(currentFile)
                 val success = if (isMp3) {
                     AudioTagManager.writeMp3Tags(currentFile, targetFile, currentMeta)
                 } else {
@@ -775,18 +786,41 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
                     val rawMp3 = File(app.cacheDir, "temp_encode_${System.currentTimeMillis()}.mp3")
                     AudioEncoder.encode(pcm, rawMp3, ExportOptions(format = AudioFormat.MP3, bitrateKbps = 192))
                     val res = AudioTagManager.writeMp3Tags(rawMp3, targetFile, currentMeta)
-                    rawMp3.delete()
+                    try { rawMp3.delete() } catch (_: Exception) {}
                     res
                 }
 
                 if (success && targetFile.exists() && targetFile.length() > 0) {
-                    refreshExportedLibrary()
-                    _statusMessage.value = "Informasi & cover lagu berhasil disimpan ke Koleksi!"
-                    _tagMetadata.value = currentMeta.copy(
-                        originalFilePath = targetFile.absolutePath,
-                        originalFileName = targetFile.name
+                    // 1. Automatically save to Phone Memory (Music/LishStudioRecord) so it is indexed and visible in player apps
+                    val publicUri = StorageExporter.saveToPhoneMemory(
+                        app,
+                        targetFile,
+                        targetFile.name,
+                        "audio/mpeg"
                     )
+
+                    // 2. If the file was opened from a content Uri, also save back to that Uri
+                    val sourceUri = _selectedTagUri.value
+                    if (sourceUri != null) {
+                        try {
+                            app.contentResolver.openOutputStream(sourceUri, "wt")?.use { out ->
+                                FileInputStream(targetFile).use { input ->
+                                    input.copyTo(out)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Could not write back to source Uri: ${e.message}")
+                        }
+                    }
+
+                    // 3. Confirm bit-level persistence by reloading metadata directly from the written targetFile
+                    val reloadedMeta = AudioTagManager.readMetadata(app, null, targetFile)
+                    _tagMetadata.value = reloadedMeta
                     _selectedTagFile.value = targetFile
+
+                    refreshExportedLibrary()
+                    val phoneMsg = if (publicUri != null) " & tersimpan di Memori HP (Folder Musik)" else ""
+                    _statusMessage.value = "Informasi & cover lagu berhasil disimpan ke Koleksi$phoneMsg!"
                     onComplete?.invoke(targetFile)
                 } else {
                     _statusMessage.value = "Gagal menyimpan info lagu."

@@ -509,9 +509,49 @@ object AudioTagManager {
     }
 
     /**
-     * Fallback ID3v2 APIC parser to extract embedded artwork if standard retriever misses it.
+     * Checks if a file is an MP3 by inspecting ID3v2 tag or MPEG sync word bytes.
      */
-    private fun extractId3v2Picture(file: File): ByteArray? {
+    fun isMp3File(file: File): Boolean {
+        if (!file.exists() || file.length() < 4) return false
+        try {
+            RandomAccessFile(file, "r").use { raf ->
+                val header = ByteArray(4)
+                raf.readFully(header)
+                if (header[0] == 'I'.code.toByte() && header[1] == 'D'.code.toByte() && header[2] == '3'.code.toByte()) {
+                    return true
+                }
+                val b0 = header[0].toInt() and 0xFF
+                val b1 = header[1].toInt() and 0xFF
+                if (b0 == 0xFF && (b1 and 0xE0) == 0xE0) {
+                    return true
+                }
+            }
+        } catch (_: Exception) {}
+        return file.name.endsWith(".mp3", ignoreCase = true)
+    }
+
+    /**
+     * Extracts cover thumbnail for library or preview display from ID3 tags or retriever.
+     */
+    fun extractCoverThumbnail(file: File): ByteArray? {
+        if (!file.exists()) return null
+        val direct = extractId3v2Picture(file)
+        if (direct != null && direct.isNotEmpty()) return direct
+        try {
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(file.absolutePath)
+            val pic = retriever.embeddedPicture
+            retriever.release()
+            return pic
+        } catch (_: Exception) {
+            return null
+        }
+    }
+
+    /**
+     * Direct ID3v2 APIC parser to extract embedded artwork if standard retriever misses it.
+     */
+    fun extractId3v2Picture(file: File): ByteArray? {
         try {
             RandomAccessFile(file, "r").use { raf ->
                 if (raf.length() < 10) return null
@@ -521,7 +561,7 @@ object AudioTagManager {
                     return null
                 }
                 val tagSize = parseSynchsafe(header, 6)
-                if (tagSize <= 0 || tagSize > 15 * 1024 * 1024) return null // Guard against corrupted size
+                if (tagSize <= 0 || tagSize > 30 * 1024 * 1024) return null // Guard against corrupted size
 
                 val tagBuffer = ByteArray(tagSize)
                 raf.readFully(tagBuffer)
@@ -540,23 +580,27 @@ object AudioTagManager {
 
                     if (frameId == "APIC") {
                         val payloadStart = offset + 10
-                        // APIC payload format:
-                        // 1 byte text encoding
-                        // MIME type string (null terminated)
-                        // 1 byte picture type
-                        // description string (null terminated)
-                        // picture data
+                        val encoding = tagBuffer[payloadStart].toInt() and 0xFF
                         var p = payloadStart + 1
+                        // skip MIME type (ASCII null-terminated)
                         while (p < payloadStart + frameSize && tagBuffer[p] != 0.toByte()) {
                             p++
                         }
                         p++ // skip null after MIME
                         p++ // skip picture type byte
-                        // skip description
-                        while (p < payloadStart + frameSize && tagBuffer[p] != 0.toByte()) {
-                            p++
+                        // skip description according to encoding
+                        if (encoding == 0 || encoding == 3) {
+                            while (p < payloadStart + frameSize && tagBuffer[p] != 0.toByte()) {
+                                p++
+                            }
+                            p++ // skip null after description
+                        } else {
+                            // UTF-16
+                            while (p + 1 < payloadStart + frameSize && (tagBuffer[p] != 0.toByte() || tagBuffer[p + 1] != 0.toByte())) {
+                                p += 2
+                            }
+                            p += 2
                         }
-                        p++ // skip null after description
 
                         val picDataLen = (payloadStart + frameSize) - p
                         if (picDataLen > 0) {
@@ -658,38 +702,43 @@ object AudioTagManager {
             val synchsafe = toSynchsafe(tagSize)
             System.arraycopy(synchsafe, 0, id3Header, 6, 4)
 
-            // 4. Write to destination file
-            val tempOutput = if (outputFile.absolutePath == sourceFile.absolutePath) {
-                File(outputFile.parentFile, "tmp_tag_${System.currentTimeMillis()}.mp3")
-            } else {
-                outputFile
-            }
+            // 4. Safely write to tempOutput file
+            val tempDir = outputFile.parentFile ?: sourceFile.parentFile ?: File(outputFile.absolutePath).parentFile
+            val tempOutput = File(tempDir, "tmp_tag_${System.currentTimeMillis()}_${(1000..9999).random()}.mp3")
 
-            FileOutputStream(tempOutput).use { fos ->
-                fos.write(id3Header)
-                fos.write(framesData)
+            try {
+                FileOutputStream(tempOutput).use { fos ->
+                    fos.write(id3Header)
+                    fos.write(framesData)
 
-                // Copy audio payload with exact RandomAccessFile seek
-                RandomAccessFile(sourceFile, "r").use { raf ->
-                    raf.seek(audioStart)
-                    var remaining = audioEnd - audioStart
-                    val buffer = ByteArray(65536)
-                    while (remaining > 0) {
-                        val toRead = buffer.size.toLong().coerceAtMost(remaining).toInt()
-                        val read = raf.read(buffer, 0, toRead)
-                        if (read <= 0) break
-                        fos.write(buffer, 0, read)
-                        remaining -= read
+                    // Copy audio payload with exact RandomAccessFile seek
+                    RandomAccessFile(sourceFile, "r").use { raf ->
+                        raf.seek(audioStart)
+                        var remaining = audioEnd - audioStart
+                        val buffer = ByteArray(65536)
+                        while (remaining > 0) {
+                            val toRead = buffer.size.toLong().coerceAtMost(remaining).toInt()
+                            val read = raf.read(buffer, 0, toRead)
+                            if (read <= 0) break
+                            fos.write(buffer, 0, read)
+                            remaining -= read
+                        }
                     }
+                    fos.flush()
                 }
-            }
 
-            if (tempOutput != outputFile) {
-                outputFile.delete()
-                tempOutput.renameTo(outputFile)
+                // Ensure parent directory exists and perform atomic overwrite
+                if (outputFile.parentFile?.exists() == false) {
+                    outputFile.parentFile?.mkdirs()
+                }
+                tempOutput.copyTo(outputFile, overwrite = true)
+                tempOutput.delete()
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed writing to temp file or target: ${e.message}", e)
+                try { tempOutput.delete() } catch (_: Exception) {}
+                false
             }
-
-            true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write MP3 ID3 tags: ${e.message}", e)
             false
@@ -718,11 +767,15 @@ object AudioTagManager {
 
     private fun buildPictureFrame(imageBytes: ByteArray, mimeType: String): ByteArray {
         if (imageBytes.isEmpty()) return ByteArray(0)
+        val normalizedMime = when {
+            mimeType.contains("png", true) -> "image/png"
+            else -> "image/jpeg"
+        }
         val bos = ByteArrayOutputStream()
         // Encoding: 0x00 (ISO-8859-1)
         bos.write(0x00)
         // MIME Type null-terminated
-        bos.write(mimeType.toByteArray(Charsets.US_ASCII))
+        bos.write(normalizedMime.toByteArray(Charsets.US_ASCII))
         bos.write(0x00)
         // Picture Type: 0x03 (Cover Front)
         bos.write(0x03)

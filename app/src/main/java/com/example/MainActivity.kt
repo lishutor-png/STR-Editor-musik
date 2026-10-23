@@ -197,7 +197,8 @@ fun AudioEditorApp(
                 )
                 2 -> TagEditorScreen(
                     viewModel = viewModel,
-                    onOpenFilePicker = { tagFilePickerLauncher.launch(arrayOf("audio/*")) }
+                    onOpenFilePicker = { tagFilePickerLauncher.launch(arrayOf("audio/*")) },
+                    onNavigateToLibrary = { selectedTab = 4 }
                 )
                 3 -> ConverterScreen(
                     viewModel = viewModel,
