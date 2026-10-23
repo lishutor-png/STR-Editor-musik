@@ -3,9 +3,14 @@ package com.example.ui.screens
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color as AndroidColor
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Shader
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -19,6 +24,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,17 +39,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Comment
 import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FilterCenterFocus
+import androidx.compose.material.icons.filled.FitScreen
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Numbers
 import androidx.compose.material.icons.filled.Person
@@ -67,13 +74,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -85,7 +93,6 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -99,8 +106,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.example.audio.AudioTagManager
 import com.example.audio.AudioViewModel
 import com.example.audio.SongMetadata
@@ -121,41 +126,46 @@ fun TagEditorScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val tagMetadata by viewModel.tagMetadata.collectAsState()
-    val selectedFile by viewModel.selectedTagFile.collectAsState()
 
-    var adjustingBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var showSourceChooser by remember { mutableStateOf(false) }
+    var adjustingSourceBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var showAdjustDialog by remember { mutableStateOf(false) }
     var isProcessingCover by remember { mutableStateOf(false) }
 
-    // Photo picker for album artwork (Google Play policy compliant Android Photo Picker)
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { imageUri: Uri? ->
-        if (imageUri != null) {
-            coroutineScope.launch {
-                isProcessingCover = true
-                val bitmap = AudioTagManager.loadBitmapFromUri(context, imageUri)
-                isProcessingCover = false
-                if (bitmap != null) {
-                    adjustingBitmap = bitmap
-                }
+    // Direct helper to process and apply chosen image URI
+    val processAndApplyUri: (Uri) -> Unit = { uri ->
+        coroutineScope.launch {
+            isProcessingCover = true
+            val bitmap = AudioTagManager.loadBitmapFromUri(context, uri)
+            isProcessingCover = false
+            if (bitmap != null) {
+                // 1. Immediately apply clean 1:1 square cover (auto center crop)
+                val squareCover = AudioTagManager.createCoverBitmap(
+                    source = bitmap,
+                    mode = AudioTagManager.CoverFitMode.FILL
+                )
+                val (bytes, mime) = AudioTagManager.bitmapToCoverBytes(squareCover)
+                viewModel.updateCoverArt(bytes, mime)
+
+                // 2. Open adjustment dialog so user can fine-tune if they want
+                adjustingSourceBitmap = bitmap
+                showAdjustDialog = true
             }
         }
     }
 
-    // Fallback file image picker (GetContent) for maximum device compatibility
-    val fileImagePickerLauncher = rememberLauncherForActivityResult(
+    // Gallery Picker launcher (GetContent image/* - supported on ALL Android versions & emulators)
+    val galleryImagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { imageUri: Uri? ->
-        if (imageUri != null) {
-            coroutineScope.launch {
-                isProcessingCover = true
-                val bitmap = AudioTagManager.loadBitmapFromUri(context, imageUri)
-                isProcessingCover = false
-                if (bitmap != null) {
-                    adjustingBitmap = bitmap
-                }
-            }
-        }
+    ) { uri: Uri? ->
+        uri?.let { processAndApplyUri(it) }
+    }
+
+    // File Manager image picker (OpenDocument image/*)
+    val fileImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let { processAndApplyUri(it) }
     }
 
     // Save As launcher
@@ -191,19 +201,13 @@ fun TagEditorScreen(
             CoverArtSection(
                 metadata = metadata,
                 isLoading = isProcessingCover,
-                onChangeCover = {
-                    photoPickerLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                    )
-                },
-                onPickFileCover = {
-                    fileImagePickerLauncher.launch("image/*")
-                },
+                onOpenCoverChooser = { showSourceChooser = true },
                 onAdjustCover = {
                     metadata.coverArtBytes?.let { bytes ->
                         val bitmap = AudioTagManager.loadBitmapFromBytes(bytes)
                         if (bitmap != null) {
-                            adjustingBitmap = bitmap
+                            adjustingSourceBitmap = bitmap
+                            showAdjustDialog = true
                         }
                     }
                 },
@@ -238,26 +242,51 @@ fun TagEditorScreen(
         }
     }
 
-    // Cover Adjustment Dialog (Size, Crop, Pan, Rotate)
-    val currentAdjusting = adjustingBitmap
-    if (currentAdjusting != null) {
+    // Dialog: Choose Cover Source (Gallery, File, or Preset)
+    if (showSourceChooser) {
+        CoverSourceChooserDialog(
+            onDismiss = { showSourceChooser = false },
+            onPickGallery = {
+                showSourceChooser = false
+                galleryImagePickerLauncher.launch("image/*")
+            },
+            onPickFile = {
+                showSourceChooser = false
+                fileImagePickerLauncher.launch(arrayOf("image/*"))
+            },
+            onSelectPreset = { presetIndex ->
+                showSourceChooser = false
+                viewModel.applyPresetCover(presetIndex)
+            }
+        )
+    }
+
+    // Dialog: 1:1 Cover Adjustment & Crop Tool
+    val currentAdjusting = adjustingSourceBitmap
+    if (showAdjustDialog && currentAdjusting != null) {
         CoverAdjustDialog(
             sourceBitmap = currentAdjusting,
-            onDismiss = { adjustingBitmap = null },
-            onApply = { scale, panX, panY, rotation, previewBoxSize ->
+            onDismiss = {
+                showAdjustDialog = false
+                adjustingSourceBitmap = null
+            },
+            onApply = { mode, zoom, panX, panY, rotation, viewportPx ->
                 coroutineScope.launch {
                     isProcessingCover = true
-                    val (croppedBytes, mime) = AudioTagManager.cropSquareCover(
+                    val outputBitmap = AudioTagManager.createCoverBitmap(
                         source = currentAdjusting,
-                        scale = scale,
+                        mode = mode,
+                        zoom = zoom,
                         panX = panX,
                         panY = panY,
                         rotationDegrees = rotation,
-                        previewBoxSize = previewBoxSize
+                        viewportSizePx = viewportPx
                     )
+                    val (croppedBytes, mime) = AudioTagManager.bitmapToCoverBytes(outputBitmap)
                     viewModel.updateCoverArt(croppedBytes, mime)
                     isProcessingCover = false
-                    adjustingBitmap = null
+                    showAdjustDialog = false
+                    adjustingSourceBitmap = null
                 }
             }
         )
@@ -346,12 +375,14 @@ private fun EmptyTagEditorView(
     }
 }
 
+/**
+ * Rebuilt Cover Art Section with 1:1 Album Frame, Badges, and Touch Targets.
+ */
 @Composable
 private fun CoverArtSection(
     metadata: SongMetadata,
     isLoading: Boolean,
-    onChangeCover: () -> Unit,
-    onPickFileCover: () -> Unit,
+    onOpenCoverChooser: () -> Unit,
     onAdjustCover: () -> Unit,
     onRemoveCover: () -> Unit,
     onChangeAudioFile: () -> Unit
@@ -360,73 +391,96 @@ private fun CoverArtSection(
         metadata.coverArtBytes?.let { bytes ->
             try {
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 null
             }
         }
     }
 
     Card(
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(18.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Header Bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Cover / Gambar Lagu",
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Album,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "Cover / Gambar Lagu",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
 
                 OutlinedButton(
                     onClick = onChangeAudioFile,
                     shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.height(34.dp).testTag("btn_change_audio_file")
+                    modifier = Modifier.height(36.dp).testTag("btn_change_audio_file")
                 ) {
                     Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Ganti File", fontSize = 12.sp)
+                    Text("Ganti Lagu", fontSize = 12.sp)
                 }
             }
 
-            // Cover Image Box
+            // 1:1 Square Album Artwork Frame
             Box(
                 modifier = Modifier
-                    .size(180.dp)
-                    .clip(RoundedCornerShape(18.dp))
+                    .size(200.dp)
+                    .clip(RoundedCornerShape(20.dp))
                     .border(
-                        width = 1.5.dp,
-                        color = if (coverImageBitmap != null) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant,
-                        shape = RoundedCornerShape(18.dp)
+                        width = 2.dp,
+                        color = if (coverImageBitmap != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                        shape = RoundedCornerShape(20.dp)
                     )
-                    .background(MaterialTheme.colorScheme.surface)
+                    .background(Color.Black.copy(alpha = 0.85f))
                     .clickable {
                         if (coverImageBitmap != null) {
                             onAdjustCover()
                         } else {
-                            onChangeCover()
+                            onOpenCoverChooser()
                         }
                     }
                     .testTag("cover_image_preview"),
                 contentAlignment = Alignment.Center
             ) {
                 if (isLoading) {
-                    CircularProgressIndicator(
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(36.dp)
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Text(
+                            text = "Memproses gambar...",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 } else if (coverImageBitmap != null) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Image(
@@ -436,57 +490,100 @@ private fun CoverArtSection(
                             modifier = Modifier.fillMaxSize()
                         )
 
-                        // Overlay hint badge at bottom
+                        // Bottom Overlay Badge: "Ketuk untuk sesuaikan / crop"
                         Box(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
-                                .background(Color.Black.copy(alpha = 0.6f))
-                                .padding(vertical = 4.dp),
+                                .background(Color.Black.copy(alpha = 0.65f))
+                                .padding(vertical = 5.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
                                 Icon(
                                     Icons.Default.Crop,
                                     contentDescription = null,
                                     tint = Color.White,
-                                    modifier = Modifier.size(12.dp)
+                                    modifier = Modifier.size(13.dp)
                                 )
                                 Text(
-                                    text = "Sentuh untuk atur posisi",
+                                    text = "Ketuk untuk atur crop & posisi",
                                     color = Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Medium
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             }
                         }
                     }
                 } else {
+                    // Empty Artwork State
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.padding(16.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.AddPhotoAlternate,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(44.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AddPhotoAlternate,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                        Text(
+                            text = "Pasang Cover Album",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Sentuh untuk pasang cover gambar",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 11.sp,
-                            textAlign = TextAlign.Center
+                            text = "Format 1:1 Persegi Standard",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 11.sp
                         )
                     }
                 }
             }
 
-            // Cover Action Buttons
+            // Cover metadata badge
+            if (coverImageBitmap != null && metadata.coverArtBytes != null) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = "1:1 Persegi",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    val kb = metadata.coverArtBytes.size / 1024
+                    Text(
+                        text = "Ukuran: $kb KB • JPEG",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+
+            // Action Buttons
             if (coverImageBitmap != null) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -494,27 +591,27 @@ private fun CoverArtSection(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Button(
-                        onClick = onChangeCover,
+                        onClick = onOpenCoverChooser,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f).height(40.dp).testTag("btn_change_cover_image")
+                        modifier = Modifier.weight(1.2f).height(46.dp).testTag("btn_change_cover_image")
                     ) {
-                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Ganti", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Ganti Cover", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
 
                     OutlinedButton(
                         onClick = onAdjustCover,
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1.1f).height(40.dp).testTag("btn_adjust_cover_image")
+                        modifier = Modifier.weight(1.2f).height(46.dp).testTag("btn_adjust_cover_image")
                     ) {
-                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Atur Posisi", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Sesuaikan", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     }
 
                     OutlinedButton(
@@ -523,9 +620,9 @@ private fun CoverArtSection(
                             contentColor = MaterialTheme.colorScheme.error
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(0.9f).height(40.dp).testTag("btn_remove_cover_image")
+                        modifier = Modifier.weight(0.9f).height(46.dp).testTag("btn_remove_cover_image")
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(17.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Hapus", fontSize = 12.sp)
                     }
@@ -537,27 +634,582 @@ private fun CoverArtSection(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Button(
-                        onClick = onChangeCover,
+                        onClick = onOpenCoverChooser,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary
                         ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1.3f).height(42.dp).testTag("btn_pick_cover_image")
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("btn_pick_cover_image")
                     ) {
-                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Tambah Gambar", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Tambah Cover Album", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Dialog to choose image source: Gallery, File Storage, or Music Presets.
+ */
+@Composable
+private fun CoverSourceChooserDialog(
+    onDismiss: () -> Unit,
+    onPickGallery: () -> Unit,
+    onPickFile: () -> Unit,
+    onSelectPreset: (Int) -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(26.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp,
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .padding(vertical = 20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Pilih Cover Album",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Gunakan foto sendiri atau desain musik siap pakai",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(32.dp).testTag("btn_close_cover_chooser")
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Tutup")
+                    }
+                }
+
+                // Option 1: Gallery
+                Card(
+                    onClick = onPickGallery,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    modifier = Modifier.fillMaxWidth().testTag("chooser_gallery_option")
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.PhotoLibrary,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Buka Galeri Foto HP",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Pilih foto dari galeri kamera atau tangkapan layar",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                // Option 2: File Storage
+                Card(
+                    onClick = onPickFile,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    modifier = Modifier.fillMaxWidth().testTag("chooser_file_option")
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.secondaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.FolderOpen,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Pilih Dari File Manager",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Jelajahi folder memori internal atau kartu SD",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                // Option 3: Presets Section
+                Text(
+                    text = "Atau Desain Musik Siap Pakai (1 Ketuk):",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AudioTagManager.PRESET_COVERS.forEach { preset ->
+                        Card(
+                            onClick = { onSelectPreset(preset.id) },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color(preset.primaryColorHex).copy(alpha = 0.15f)
+                            ),
+                            modifier = Modifier.weight(1f).aspectRatio(0.85f).testTag("preset_card_${preset.id}")
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxSize().padding(8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(preset.primaryColorHex)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.AutoAwesome,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    text = preset.name,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Rebuilt 1:1 Square Cover Adjustment & Crop Tool with 100% WYSIWYG matching.
+ */
+@Composable
+fun CoverAdjustDialog(
+    sourceBitmap: Bitmap,
+    onDismiss: () -> Unit,
+    onApply: (
+        mode: AudioTagManager.CoverFitMode,
+        zoom: Float,
+        panX: Float,
+        panY: Float,
+        rotationDegrees: Int,
+        viewportSizePx: Float
+    ) -> Unit
+) {
+    var mode by remember { mutableStateOf(AudioTagManager.CoverFitMode.FILL) }
+    var zoom by remember { mutableFloatStateOf(1.0f) }
+    var panX by remember { mutableFloatStateOf(0f) }
+    var panY by remember { mutableFloatStateOf(0f) }
+    var rotation by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+
+    val boxSizeDp = 260.dp
+    val boxSizePx = with(density) { boxSizeDp.toPx() }
+
+    // Prepare rotated source bitmap for preview canvas
+    val rotatedSource = remember(sourceBitmap, rotation) {
+        if (rotation != 0) {
+            val mat = android.graphics.Matrix().apply { postRotate(rotation.toFloat()) }
+            Bitmap.createBitmap(sourceBitmap, 0, 0, sourceBitmap.width, sourceBitmap.height, mat, true)
+        } else {
+            sourceBitmap
+        }
+    }
+    val rotatedImageBitmap = remember(rotatedSource) { rotatedSource.asImageBitmap() }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(26.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp,
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .padding(vertical = 14.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Sesuaikan Cover Album",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Bingkai 1:1 Persegi Standard Musik",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(32.dp).testTag("btn_close_cover_adjust")
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Tutup",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // Mode Selector Chips
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = mode == AudioTagManager.CoverFitMode.FILL,
+                        onClick = {
+                            mode = AudioTagManager.CoverFitMode.FILL
+                            zoom = 1.0f
+                            panX = 0f
+                            panY = 0f
+                        },
+                        label = { Text("Isi Penuh", fontSize = 12.sp) },
+                        leadingIcon = if (mode == AudioTagManager.CoverFitMode.FILL) {
+                            { Icon(Icons.Default.Crop, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                        } else null,
+                        modifier = Modifier.weight(1f).testTag("chip_mode_fill")
+                    )
+
+                    FilterChip(
+                        selected = mode == AudioTagManager.CoverFitMode.FIT,
+                        onClick = {
+                            mode = AudioTagManager.CoverFitMode.FIT
+                            zoom = 1.0f
+                            panX = 0f
+                            panY = 0f
+                        },
+                        label = { Text("Muat Pas", fontSize = 12.sp) },
+                        leadingIcon = if (mode == AudioTagManager.CoverFitMode.FIT) {
+                            { Icon(Icons.Default.FitScreen, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                        } else null,
+                        modifier = Modifier.weight(1f).testTag("chip_mode_fit")
+                    )
+
+                    FilterChip(
+                        selected = mode == AudioTagManager.CoverFitMode.CUSTOM,
+                        onClick = { mode = AudioTagManager.CoverFitMode.CUSTOM },
+                        label = { Text("Kustom", fontSize = 12.sp) },
+                        leadingIcon = if (mode == AudioTagManager.CoverFitMode.CUSTOM) {
+                            { Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                        } else null,
+                        modifier = Modifier.weight(1f).testTag("chip_mode_custom")
+                    )
+                }
+
+                // 1:1 Viewport Box (Interactive Pan & Zoom)
+                Box(
+                    modifier = Modifier
+                        .size(boxSizeDp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Color.Black)
+                        .border(
+                            width = 2.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                            shape = RoundedCornerShape(18.dp)
+                        )
+                        .pointerInput(mode, rotatedSource) {
+                            if (mode == AudioTagManager.CoverFitMode.CUSTOM) {
+                                detectTransformGestures { _, pan, gestureZoom, _ ->
+                                    zoom = (zoom * gestureZoom).coerceIn(0.6f, 4.0f)
+                                    panX += pan.x
+                                    panY += pan.y
+                                }
+                            }
+                        }
+                        .testTag("cover_adjust_canvas_box"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clipToBounds()
+                    ) {
+                        val canvasW = size.width
+                        val canvasH = size.height
+                        val srcW = rotatedSource.width.toFloat()
+                        val srcH = rotatedSource.height.toFloat()
+
+                        when (mode) {
+                            AudioTagManager.CoverFitMode.FILL -> {
+                                val scale = maxOf(canvasW / srcW, canvasH / srcH)
+                                val scaledW = srcW * scale
+                                val scaledH = srcH * scale
+                                val left = (canvasW - scaledW) / 2f
+                                val top = (canvasH - scaledH) / 2f
+
+                                drawImage(
+                                    image = rotatedImageBitmap,
+                                    dstOffset = androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()),
+                                    dstSize = androidx.compose.ui.unit.IntSize(scaledW.toInt(), scaledH.toInt())
+                                )
+                            }
+                            AudioTagManager.CoverFitMode.FIT -> {
+                                // Background gradient
+                                drawRect(
+                                    brush = androidx.compose.ui.graphics.Brush.linearGradient(
+                                        colors = listOf(Color(0xFF1A1A24), Color(0xFF0A0A0F))
+                                    )
+                                )
+                                val scale = minOf(canvasW / srcW, canvasH / srcH)
+                                val scaledW = srcW * scale
+                                val scaledH = srcH * scale
+                                val left = (canvasW - scaledW) / 2f
+                                val top = (canvasH - scaledH) / 2f
+
+                                drawImage(
+                                    image = rotatedImageBitmap,
+                                    dstOffset = androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()),
+                                    dstSize = androidx.compose.ui.unit.IntSize(scaledW.toInt(), scaledH.toInt())
+                                )
+                            }
+                            AudioTagManager.CoverFitMode.CUSTOM -> {
+                                drawRect(Color(0xFF0F0F14))
+
+                                val baseScale = maxOf(canvasW / srcW, canvasH / srcH)
+                                val currentScale = baseScale * zoom
+                                val scaledW = srcW * currentScale
+                                val scaledH = srcH * currentScale
+
+                                val centerX = canvasW / 2f + panX
+                                val centerY = canvasH / 2f + panY
+
+                                val left = centerX - (scaledW / 2f)
+                                val top = centerY - (scaledH / 2f)
+
+                                drawImage(
+                                    image = rotatedImageBitmap,
+                                    dstOffset = androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()),
+                                    dstSize = androidx.compose.ui.unit.IntSize(scaledW.toInt(), scaledH.toInt())
+                                )
+                            }
+                        }
+
+                        // Composition Grid Lines (Rule of thirds)
+                        val gridColor = Color.White.copy(alpha = 0.25f)
+                        drawLine(gridColor, Offset(canvasW / 3f, 0f), Offset(canvasW / 3f, canvasH), strokeWidth = 1.dp.toPx())
+                        drawLine(gridColor, Offset(canvasW * 2f / 3f, 0f), Offset(canvasW * 2f / 3f, canvasH), strokeWidth = 1.dp.toPx())
+                        drawLine(gridColor, Offset(0f, canvasH / 3f), Offset(canvasW, canvasH / 3f), strokeWidth = 1.dp.toPx())
+                        drawLine(gridColor, Offset(0f, canvasH * 2f / 3f), Offset(canvasW, canvasH * 2f / 3f), strokeWidth = 1.dp.toPx())
+                    }
+                }
+
+                // Custom Mode Toolbar: Zoom, Rotate, Center, Reset
+                if (mode == AudioTagManager.CoverFitMode.CUSTOM) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Ukuran / Zoom",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "${(zoom * 100).toInt()}%",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            IconButton(
+                                onClick = { zoom = (zoom - 0.15f).coerceAtLeast(0.6f) },
+                                modifier = Modifier.size(34.dp).testTag("btn_zoom_out_cover")
+                            ) {
+                                Icon(Icons.Default.ZoomOut, contentDescription = "Perkecil", modifier = Modifier.size(18.dp))
+                            }
+
+                            Slider(
+                                value = zoom,
+                                onValueChange = { zoom = it },
+                                valueRange = 0.6f..3.5f,
+                                modifier = Modifier.weight(1f).testTag("slider_cover_zoom")
+                            )
+
+                            IconButton(
+                                onClick = { zoom = (zoom + 0.15f).coerceAtMost(3.5f) },
+                                modifier = Modifier.size(34.dp).testTag("btn_zoom_in_cover")
+                            ) {
+                                Icon(Icons.Default.ZoomIn, contentDescription = "Perbesar", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+
+                // Common Tool Buttons: Rotate, Center, Reset
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { rotation = (rotation + 90) % 360 },
+                        modifier = Modifier.weight(1f).height(38.dp).testTag("btn_rotate_cover"),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.RotateRight, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Putar", fontSize = 11.sp)
                     }
 
                     OutlinedButton(
-                        onClick = onPickFileCover,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f).height(42.dp).testTag("btn_pick_file_cover")
+                        onClick = {
+                            panX = 0f
+                            panY = 0f
+                        },
+                        modifier = Modifier.weight(1f).height(38.dp).testTag("btn_center_cover"),
+                        shape = RoundedCornerShape(10.dp)
                     ) {
-                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.FilterCenterFocus, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Tengah", fontSize = 11.sp)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            mode = AudioTagManager.CoverFitMode.FILL
+                            zoom = 1.0f
+                            panX = 0f
+                            panY = 0f
+                            rotation = 0
+                        },
+                        modifier = Modifier.weight(1f).height(38.dp).testTag("btn_reset_cover"),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Reset", fontSize = 11.sp)
+                    }
+                }
+
+                // Action buttons: Cancel & Apply
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f).height(48.dp).testTag("btn_cancel_cover_adjust"),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Batal", fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Button(
+                        onClick = {
+                            onApply(mode, zoom, panX, panY, rotation, boxSizePx)
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        modifier = Modifier.weight(1.3f).height(48.dp).testTag("btn_apply_cover_adjust"),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Pilih File", fontSize = 12.sp)
+                        Text("Terapkan Cover", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
                 }
             }
@@ -751,57 +1403,74 @@ private fun AudioInfoCard(metadata: SongMetadata) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Icon(
-                    Icons.Default.Info,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp)
-                )
-                Text(
-                    text = "Informasi Teknis File",
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp
-                )
-            }
-
             Text(
-                text = "Nama Asli: ${metadata.originalFileName}",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                text = "Informasi File Audio",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "Format: ${metadata.format}",
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 12.sp
-                )
-                if (metadata.durationMs > 0) {
-                    Text("•", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
                     Text(
-                        text = "Durasi: ${TimeFormatUtils.formatDuration(metadata.durationMs)}",
+                        text = "Format Asli",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp
+                        fontSize = 11.sp
+                    )
+                    Text(
+                        text = metadata.format,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
-                if (metadata.bitrateKbps > 0) {
-                    Text("•", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+
+                Column {
                     Text(
-                        text = "${metadata.bitrateKbps} kbps",
+                        text = "Durasi",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp
+                        fontSize = 11.sp
                     )
+                    Text(
+                        text = TimeFormatUtils.formatDuration(metadata.durationMs),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Column {
+                    Text(
+                        text = "Sample Rate",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp
+                    )
+                    Text(
+                        text = "${metadata.sampleRate / 1000} kHz",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 13.sp
+                    )
+                }
+
+                if (metadata.bitrateKbps > 0) {
+                    Column {
+                        Text(
+                            text = "Bitrate",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp
+                        )
+                        Text(
+                            text = "${metadata.bitrateKbps} kbps",
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 13.sp
+                        )
+                    }
                 }
             }
         }
@@ -854,253 +1523,6 @@ private fun ActionButtonsSection(
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold
             )
-        }
-    }
-}
-
-@Composable
-fun CoverAdjustDialog(
-    sourceBitmap: Bitmap,
-    onDismiss: () -> Unit,
-    onApply: (scale: Float, panX: Float, panY: Float, rotationDegrees: Int, previewBoxSize: Float) -> Unit
-) {
-    var zoom by remember { mutableStateOf(1.0f) }
-    var panX by remember { mutableStateOf(0f) }
-    var panY by remember { mutableStateOf(0f) }
-    var rotation by remember { mutableStateOf(0) }
-    val density = LocalDensity.current
-
-    val boxSizeDp = 260.dp
-    val boxSizePx = with(density) { boxSizeDp.toPx() }
-
-    val imageBitmap = remember(sourceBitmap) { sourceBitmap.asImageBitmap() }
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp,
-            modifier = Modifier
-                .fillMaxWidth(0.94f)
-                .padding(vertical = 16.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Sesuaikan Cover Lagu",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Geser, perbesar & putar untuk bingkai 1:1",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    IconButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.size(32.dp).testTag("btn_close_cover_adjust")
-                    ) {
-                        Icon(
-                            Icons.Default.Close,
-                            contentDescription = "Tutup",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                // Square Viewport (1:1 aspect ratio)
-                Box(
-                    modifier = Modifier
-                        .size(boxSizeDp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color.Black)
-                        .border(
-                            width = 2.dp,
-                            color = MaterialTheme.colorScheme.primary,
-                            shape = RoundedCornerShape(16.dp)
-                        )
-                        .pointerInput(sourceBitmap) {
-                            detectTransformGestures { _, pan, gestureZoom, _ ->
-                                zoom = (zoom * gestureZoom).coerceIn(0.8f, 4.5f)
-                                panX += pan.x
-                                panY += pan.y
-                            }
-                        }
-                        .testTag("cover_adjust_canvas_box"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Canvas(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clipToBounds()
-                    ) {
-                        val effectiveW = if (rotation % 180 == 0) sourceBitmap.width.toFloat() else sourceBitmap.height.toFloat()
-                        val effectiveH = if (rotation % 180 == 0) sourceBitmap.height.toFloat() else sourceBitmap.width.toFloat()
-                        val baseScale = (size.width / effectiveW.coerceAtLeast(1f)).coerceAtLeast(size.height / effectiveH.coerceAtLeast(1f))
-                        val currentScale = baseScale * zoom
-
-                        withTransform({
-                            translate(size.width / 2f + panX, size.height / 2f + panY)
-                            scale(currentScale, currentScale)
-                            rotate(rotation.toFloat())
-                            translate(-sourceBitmap.width / 2f, -sourceBitmap.height / 2f)
-                        }) {
-                            drawImage(imageBitmap)
-                        }
-
-                        // Subtle grid framing lines (rule of thirds)
-                        val gridColor = Color.White.copy(alpha = 0.30f)
-                        drawLine(gridColor, Offset(size.width / 3f, 0f), Offset(size.width / 3f, size.height), strokeWidth = 1.dp.toPx())
-                        drawLine(gridColor, Offset(size.width * 2f / 3f, 0f), Offset(size.width * 2f / 3f, size.height), strokeWidth = 1.dp.toPx())
-                        drawLine(gridColor, Offset(0f, size.height / 3f), Offset(size.width, size.height / 3f), strokeWidth = 1.dp.toPx())
-                        drawLine(gridColor, Offset(0f, size.height * 2f / 3f), Offset(size.width, size.height * 2f / 3f), strokeWidth = 1.dp.toPx())
-                    }
-                }
-
-                // Controls: Zoom Slider and Buttons
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Ukuran / Zoom",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "${(zoom * 100).toInt()}%",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        IconButton(
-                            onClick = { zoom = (zoom - 0.15f).coerceAtLeast(0.8f) },
-                            modifier = Modifier.size(34.dp).testTag("btn_zoom_out_cover")
-                        ) {
-                            Icon(Icons.Default.ZoomOut, contentDescription = "Perkecil", modifier = Modifier.size(18.dp))
-                        }
-
-                        Slider(
-                            value = zoom,
-                            onValueChange = { zoom = it },
-                            valueRange = 0.8f..4.0f,
-                            modifier = Modifier.weight(1f).testTag("slider_cover_zoom")
-                        )
-
-                        IconButton(
-                            onClick = { zoom = (zoom + 0.15f).coerceAtMost(4.0f) },
-                            modifier = Modifier.size(34.dp).testTag("btn_zoom_in_cover")
-                        ) {
-                            Icon(Icons.Default.ZoomIn, contentDescription = "Perbesar", modifier = Modifier.size(18.dp))
-                        }
-                    }
-
-                    // Toolbar buttons: Rotate, Center, Reset
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { rotation = (rotation + 90) % 360 },
-                            modifier = Modifier.weight(1f).height(38.dp).testTag("btn_rotate_cover"),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.RotateRight, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Putar", fontSize = 11.sp)
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                panX = 0f
-                                panY = 0f
-                            },
-                            modifier = Modifier.weight(1f).height(38.dp).testTag("btn_center_cover"),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.FilterCenterFocus, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Tengah", fontSize = 11.sp)
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                zoom = 1.0f
-                                panX = 0f
-                                panY = 0f
-                                rotation = 0
-                            },
-                            modifier = Modifier.weight(1f).height(38.dp).testTag("btn_reset_cover"),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Reset", fontSize = 11.sp)
-                        }
-                    }
-                }
-
-                // Action buttons: Cancel & Apply
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f).height(46.dp).testTag("btn_cancel_cover_adjust"),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("Batal", fontWeight = FontWeight.SemiBold)
-                    }
-
-                    Button(
-                        onClick = {
-                            onApply(zoom, panX, panY, rotation, boxSizePx)
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        modifier = Modifier.weight(1.3f).height(46.dp).testTag("btn_apply_cover_adjust"),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Terapkan Cover", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                }
-            }
         }
     }
 }

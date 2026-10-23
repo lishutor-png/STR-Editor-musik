@@ -726,6 +726,12 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
         _statusMessage.value = "Gambar cover diperbarui"
     }
 
+    fun applyPresetCover(presetIndex: Int) {
+        val (bytes, mime) = AudioTagManager.generatePresetCover(presetIndex)
+        updateCoverArt(bytes, mime)
+        _statusMessage.value = "Cover album preset berhasil dipasang"
+    }
+
     fun removeCoverArt() {
         _tagMetadata.value = _tagMetadata.value?.copy(
             coverArtBytes = null
