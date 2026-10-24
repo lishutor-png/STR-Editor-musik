@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
-import android.os.Environment
 import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -25,34 +24,23 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
 
     val player = RealtimeAudioPlayer(viewModelScope)
 
-    // Tag Editor & Song Information State
-    private val _tagMetadata = MutableStateFlow<SongMetadata?>(null)
-    val tagMetadata: StateFlow<SongMetadata?> = _tagMetadata.asStateFlow()
-
-    private val _selectedTagFile = MutableStateFlow<File?>(null)
-    val selectedTagFile: StateFlow<File?> = _selectedTagFile.asStateFlow()
-
-    private val _selectedTagUri = MutableStateFlow<Uri?>(null)
-    val selectedTagUri: StateFlow<Uri?> = _selectedTagUri.asStateFlow()
-
-    // Current active track for Editing / Trimming
+    // Active track & editing state
     private val _activeTrack = MutableStateFlow<AudioTrackInfo?>(null)
     val activeTrack: StateFlow<AudioTrackInfo?> = _activeTrack.asStateFlow()
 
     private val _activePcm = MutableStateFlow<PcmData?>(null)
     val activePcm: StateFlow<PcmData?> = _activePcm.asStateFlow()
 
-    private val _waveformBars = MutableStateFlow(FloatArray(120) { 0.1f })
+    private val _waveformBars = MutableStateFlow<FloatArray>(FloatArray(100) { 0.1f })
     val waveformBars: StateFlow<FloatArray> = _waveformBars.asStateFlow()
 
-    // Trim & Effects State
     private val _startMs = MutableStateFlow(0L)
     val startMs: StateFlow<Long> = _startMs.asStateFlow()
 
     private val _endMs = MutableStateFlow(0L)
     val endMs: StateFlow<Long> = _endMs.asStateFlow()
 
-    private val _volumeGain = MutableStateFlow(1.0f) // 100%
+    private val _volumeGain = MutableStateFlow(1.0f)
     val volumeGain: StateFlow<Float> = _volumeGain.asStateFlow()
 
     private val _fadeInMs = MutableStateFlow(0L)
@@ -61,26 +49,25 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
     private val _fadeOutMs = MutableStateFlow(0L)
     val fadeOutMs: StateFlow<Long> = _fadeOutMs.asStateFlow()
 
-    // Equalizer State
     private val _equalizerSettings = MutableStateFlow(EqualizerSettings())
     val equalizerSettings: StateFlow<EqualizerSettings> = _equalizerSettings.asStateFlow()
 
-    // Theme Mode (null = Follow System, true = Dark, false = Light)
-    private val _isDarkTheme = MutableStateFlow<Boolean?>(null)
-    val isDarkTheme: StateFlow<Boolean?> = _isDarkTheme.asStateFlow()
+    // Theme mode (true = dark, false = light)
+    private val _isDarkTheme = MutableStateFlow(true)
+    val isDarkTheme: StateFlow<Boolean> = _isDarkTheme.asStateFlow()
 
-    // Selected file for "Save As" operation
+    // Save as state
     private val _pendingSaveAsFile = MutableStateFlow<File?>(null)
     val pendingSaveAsFile: StateFlow<File?> = _pendingSaveAsFile.asStateFlow()
 
-    // Merge Queue
+    // Merge tracks state
     private val _mergeTracks = MutableStateFlow<List<AudioTrackInfo>>(emptyList())
     val mergeTracks: StateFlow<List<AudioTrackInfo>> = _mergeTracks.asStateFlow()
 
-    private val _mergeGapMs = MutableStateFlow(0L)
+    private val _mergeGapMs = MutableStateFlow(500L)
     val mergeGapMs: StateFlow<Long> = _mergeGapMs.asStateFlow()
 
-    // Format Converter State
+    // Converter state
     private val _converterTrack = MutableStateFlow<AudioTrackInfo?>(null)
     val converterTrack: StateFlow<AudioTrackInfo?> = _converterTrack.asStateFlow()
 
@@ -90,11 +77,11 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
     private val _converterBitrate = MutableStateFlow(192)
     val converterBitrate: StateFlow<Int> = _converterBitrate.asStateFlow()
 
-    // Export & Processing State
+    // Processing & status
     private val _isProcessing = MutableStateFlow(false)
     val isProcessing: StateFlow<Boolean> = _isProcessing.asStateFlow()
 
-    private val _processingProgress = MutableStateFlow(0.0f)
+    private val _processingProgress = MutableStateFlow(0f)
     val processingProgress: StateFlow<Float> = _processingProgress.asStateFlow()
 
     private val _processingStatus = MutableStateFlow("")
@@ -103,67 +90,124 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
-    // Exported files library
+    // Library & sample tracks
     private val _exportedFiles = MutableStateFlow<List<ExportedAudio>>(emptyList())
     val exportedFiles: StateFlow<List<ExportedAudio>> = _exportedFiles.asStateFlow()
 
-    // Built-in sample tracks
     private val _sampleTracks = MutableStateFlow<List<AudioTrackInfo>>(emptyList())
     val sampleTracks: StateFlow<List<AudioTrackInfo>> = _sampleTracks.asStateFlow()
 
-    // Mini player for library
     private var libraryMediaPlayer: MediaPlayer? = null
     private val _libraryPlayingPath = MutableStateFlow<String?>(null)
     val libraryPlayingPath: StateFlow<String?> = _libraryPlayingPath.asStateFlow()
 
+    // Tag Editor state
+    private val _tagMetadata = MutableStateFlow<SongMetadata?>(null)
+    val tagMetadata: StateFlow<SongMetadata?> = _tagMetadata.asStateFlow()
+
+    private val _selectedTagFile = MutableStateFlow<File?>(null)
+    val selectedTagFile: StateFlow<File?> = _selectedTagFile.asStateFlow()
+
+    private val _selectedTagUri = MutableStateFlow<Uri?>(null)
+    val selectedTagUri: StateFlow<Uri?> = _selectedTagUri.asStateFlow()
+
     init {
-        // Clear any previous sample tracks so app starts completely clean and empty as requested
-        SampleAudioGenerator.deleteSampleTracks(getApplication())
-        _sampleTracks.value = emptyList()
-        refreshExportedLibrary()
+        viewModelScope.launch {
+            loadSampleTracks()
+            refreshExportedLibrary()
+        }
     }
 
     fun clearStatusMessage() {
         _statusMessage.value = null
     }
 
+    private suspend fun loadSampleTracks() {
+        try {
+            val samples = SampleAudioGenerator.getOrCreateSampleTracks(getApplication())
+            _sampleTracks.value = samples
+            if (_activeTrack.value == null && samples.isNotEmpty()) {
+                loadTrack(samples.first())
+            }
+            if (_tagMetadata.value == null && samples.isNotEmpty()) {
+                loadTagFromFile(samples.first().file ?: return)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed loading sample tracks: ${e.message}")
+        }
+    }
+
     fun refreshExportedLibrary() {
         viewModelScope.launch(Dispatchers.IO) {
-            val exportDir = getExportDirectory()
-            val files = exportDir.listFiles { file ->
-                file.isFile && (file.name.endsWith(".mp3", true) ||
-                        file.name.endsWith(".m4a", true) ||
-                        file.name.endsWith(".wav", true) ||
-                        file.name.endsWith(".flac", true))
-            }?.sortedByDescending { it.lastModified() } ?: emptyList()
+            try {
+                val list = mutableListOf<ExportedAudio>()
+                val app = getApplication<Application>()
 
-            val list = files.map { file ->
-                val format = when {
-                    file.name.endsWith(".mp3", true) -> AudioFormat.MP3
-                    file.name.endsWith(".m4a", true) -> AudioFormat.M4A
-                    file.name.endsWith(".wav", true) -> AudioFormat.WAV
-                    file.name.endsWith(".flac", true) -> AudioFormat.FLAC
-                    else -> AudioFormat.MP3
+                // Check internal export dir
+                val exportDir = getExportDirectory()
+                if (exportDir.exists()) {
+                    exportDir.listFiles()?.filter { file ->
+                        file.isFile && (file.name.endsWith(".mp3", true) ||
+                                file.name.endsWith(".m4a", true) ||
+                                file.name.endsWith(".wav", true) ||
+                                file.name.endsWith(".flac", true))
+                    }?.forEach { file ->
+                        try {
+                            val meta = AudioDecoder.extractMetadata(app, file = file)
+                            list.add(
+                                ExportedAudio(
+                                    file = file,
+                                    title = meta.title,
+                                    durationMs = meta.durationMs,
+                                    sizeBytes = file.length(),
+                                    format = meta.format,
+                                    dateModified = file.lastModified(),
+                                    coverArtBytes = meta.coverArtBytes
+                                )
+                            )
+                        } catch (e: Exception) {
+                            // ignore
+                        }
+                    }
                 }
-                val duration = try {
-                    val pcm = if (file.name.endsWith(".wav", true)) AudioDecoder.parseWavFile(file) else null
-                    pcm?.durationMs ?: (file.length() / (192 * 128 / 8)) // estimate if needed
-                } catch (e: Exception) {
-                    0L
-                }
-                val coverBytes = AudioTagManager.extractCoverThumbnail(file)
 
-                ExportedAudio(
-                    file = file,
-                    title = file.nameWithoutExtension,
-                    durationMs = duration,
-                    sizeBytes = file.length(),
-                    format = format,
-                    dateModified = file.lastModified(),
-                    coverArtBytes = coverBytes
+                // Check public Music/LishStudioRecord
+                val publicDir = File(
+                    android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MUSIC),
+                    "LishStudioRecord"
                 )
+                if (publicDir.exists()) {
+                    publicDir.listFiles()?.filter { file ->
+                        file.isFile && (file.name.endsWith(".mp3", true) ||
+                                file.name.endsWith(".m4a", true) ||
+                                file.name.endsWith(".wav", true) ||
+                                file.name.endsWith(".flac", true))
+                    }?.forEach { file ->
+                        if (list.none { it.file.name == file.name }) {
+                            try {
+                                val meta = AudioDecoder.extractMetadata(app, file = file)
+                                list.add(
+                                    ExportedAudio(
+                                        file = file,
+                                        title = meta.title,
+                                        durationMs = meta.durationMs,
+                                        sizeBytes = file.length(),
+                                        format = meta.format,
+                                        dateModified = file.lastModified(),
+                                        coverArtBytes = meta.coverArtBytes
+                                    )
+                                )
+                            } catch (e: Exception) {
+                                // ignore
+                            }
+                        }
+                    }
+                }
+
+                _exportedFiles.value = list.sortedByDescending { it.dateModified }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error refreshing library: ${e.message}")
             }
-            _exportedFiles.value = list
         }
     }
 
@@ -171,13 +215,26 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isProcessing.value = true
             _processingStatus.value = "Membuka file audio..."
+            _processingProgress.value = 0.2f
             try {
-                val info = AudioDecoder.extractMetadata(getApplication(), uri, null, "Audio Pilihan")
-                loadTrack(info)
-                _statusMessage.value = "Berhasil memuat: ${info.title}"
+                val app = getApplication<Application>()
+                val trackInfo = AudioDecoder.extractMetadata(app, uri = uri)
+                _activeTrack.value = trackInfo
+
+                _processingStatus.value = "Memproses gelombang suara..."
+                _processingProgress.value = 0.5f
+                val pcm = AudioDecoder.decode(app, uri)
+                _activePcm.value = pcm
+
+                _startMs.value = 0L
+                _endMs.value = pcm.durationMs
+                _waveformBars.value = AudioProcessor.extractWaveform(pcm, 100)
+
+                player.setSource(pcm, 0L, pcm.durationMs)
+                _statusMessage.value = "Berhasil memuat: ${trackInfo.title}"
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to load audio from URI: ${e.message}")
-                _statusMessage.value = "Gagal memuat audio: ${e.message}"
+                Log.e(TAG, "Failed loading track from uri: ${e.message}", e)
+                _statusMessage.value = "Gagal memuat audio: ${e.localizedMessage}"
             } finally {
                 _isProcessing.value = false
             }
@@ -187,35 +244,23 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
     fun loadTrack(track: AudioTrackInfo) {
         viewModelScope.launch {
             _isProcessing.value = true
-            _processingStatus.value = "Menganalisis audio..."
-            player.stop()
-
+            _processingStatus.value = "Membuka ${track.title}..."
+            _processingProgress.value = 0.2f
             try {
-                val pcm = withContext(Dispatchers.IO) {
-                    if (track.file != null) {
-                        AudioDecoder.decode(getApplication(), track.file)
-                    } else if (track.uri != null) {
-                        AudioDecoder.decode(getApplication(), track.uri)
-                    } else {
-                        throw IllegalStateException("No file or URI available for track")
-                    }
-                }
-
-                _activeTrack.value = track.copy(durationMs = pcm.durationMs)
+                val app = getApplication<Application>()
+                _activeTrack.value = track
+                val fileOrUri = track.file ?: track.uri ?: return@launch
+                val pcm = AudioDecoder.decode(app, fileOrUri)
                 _activePcm.value = pcm
+
                 _startMs.value = 0L
                 _endMs.value = pcm.durationMs
+                _waveformBars.value = AudioProcessor.extractWaveform(pcm, 100)
 
-                // Waveform
-                val bars = AudioProcessor.extractWaveform(pcm, 120)
-                _waveformBars.value = bars
-
-                // Setup player
                 player.setSource(pcm, 0L, pcm.durationMs)
-                player.updateEffects(_volumeGain.value, _fadeInMs.value, _fadeOutMs.value)
             } catch (e: Exception) {
-                Log.e(TAG, "Error decoding track: ${e.message}")
-                _statusMessage.value = "Gagal memproses audio: ${e.message}"
+                Log.e(TAG, "Failed loading track: ${e.message}", e)
+                _statusMessage.value = "Gagal memuat lagu: ${e.localizedMessage}"
             } finally {
                 _isProcessing.value = false
             }
@@ -223,102 +268,88 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateTrimRange(start: Long, end: Long) {
-        val duration = _activePcm.value?.durationMs ?: 0L
-        val newStart = start.coerceIn(0L, duration)
-        val newEnd = end.coerceIn(newStart, duration)
-        _startMs.value = newStart
-        _endMs.value = newEnd
-        player.updateSelection(newStart, newEnd)
+        val duration = _activePcm.value?.durationMs ?: return
+        val s = start.coerceIn(0L, duration)
+        val e = end.coerceIn(s, duration)
+        _startMs.value = s
+        _endMs.value = e
+        player.updateSelection(s, e)
     }
 
     fun resetTrimRange() {
-        val duration = _activePcm.value?.durationMs ?: 0L
-        updateTrimRange(0L, duration)
-        _statusMessage.value = "Seleksi di-reset ke durasi penuh"
+        val duration = _activePcm.value?.durationMs ?: return
+        _startMs.value = 0L
+        _endMs.value = duration
+        player.updateSelection(0L, duration)
     }
 
     fun adjustStartMs(deltaMs: Long) {
+        val duration = _activePcm.value?.durationMs ?: return
         val newStart = (_startMs.value + deltaMs).coerceIn(0L, _endMs.value)
-        updateTrimRange(newStart, _endMs.value)
+        _startMs.value = newStart
+        player.updateSelection(newStart, _endMs.value)
     }
 
     fun adjustEndMs(deltaMs: Long) {
-        val duration = _activePcm.value?.durationMs ?: 0L
+        val duration = _activePcm.value?.durationMs ?: return
         val newEnd = (_endMs.value + deltaMs).coerceIn(_startMs.value, duration)
-        updateTrimRange(_startMs.value, newEnd)
+        _endMs.value = newEnd
+        player.updateSelection(_startMs.value, newEnd)
     }
 
     fun setVolumeGain(gain: Float) {
-        val safeGain = gain.coerceIn(0.0f, 3.0f)
-        _volumeGain.value = safeGain
-        player.updateEffects(safeGain, _fadeInMs.value, _fadeOutMs.value, _equalizerSettings.value)
+        _volumeGain.value = gain
+        player.updateEffects(gain, _fadeInMs.value, _fadeOutMs.value, _equalizerSettings.value)
     }
 
     fun setFadeInMs(ms: Long) {
-        val safeMs = ms.coerceAtLeast(0L)
-        _fadeInMs.value = safeMs
-        player.updateEffects(_volumeGain.value, safeMs, _fadeOutMs.value, _equalizerSettings.value)
+        _fadeInMs.value = ms
+        player.updateEffects(_volumeGain.value, ms, _fadeOutMs.value, _equalizerSettings.value)
     }
 
     fun setFadeOutMs(ms: Long) {
-        val safeMs = ms.coerceAtLeast(0L)
-        _fadeOutMs.value = safeMs
-        player.updateEffects(_volumeGain.value, _fadeInMs.value, safeMs, _equalizerSettings.value)
+        _fadeOutMs.value = ms
+        player.updateEffects(_volumeGain.value, _fadeInMs.value, ms, _equalizerSettings.value)
     }
 
-    // Equalizer Controls
     fun setEqualizerPreset(preset: EqualizerPreset) {
-        val updated = _equalizerSettings.value.copy(
-            bassDb = preset.bassDb,
-            midDb = preset.midDb,
-            trebleDb = preset.trebleDb,
-            activePreset = preset
+        _equalizerSettings.value = EqualizerSettings(
+            bassGain = preset.bassGain,
+            midGain = preset.midGain,
+            trebleGain = preset.trebleGain,
+            presetName = preset.name
         )
-        _equalizerSettings.value = updated
-        player.updateEffects(_volumeGain.value, _fadeInMs.value, _fadeOutMs.value, updated)
+        player.updateEffects(_volumeGain.value, _fadeInMs.value, _fadeOutMs.value, _equalizerSettings.value)
     }
 
     fun setBassGain(db: Float) {
-        val updated = _equalizerSettings.value.copy(
-            bassDb = db.coerceIn(-12f, 12f),
-            activePreset = EqualizerPreset.CUSTOM
-        )
-        _equalizerSettings.value = updated
-        player.updateEffects(_volumeGain.value, _fadeInMs.value, _fadeOutMs.value, updated)
+        _equalizerSettings.value = _equalizerSettings.value.copy(bassGain = db, presetName = null)
+        player.updateEffects(_volumeGain.value, _fadeInMs.value, _fadeOutMs.value, _equalizerSettings.value)
     }
 
     fun setMidGain(db: Float) {
-        val updated = _equalizerSettings.value.copy(
-            midDb = db.coerceIn(-12f, 12f),
-            activePreset = EqualizerPreset.CUSTOM
-        )
-        _equalizerSettings.value = updated
-        player.updateEffects(_volumeGain.value, _fadeInMs.value, _fadeOutMs.value, updated)
+        _equalizerSettings.value = _equalizerSettings.value.copy(midGain = db, presetName = null)
+        player.updateEffects(_volumeGain.value, _fadeInMs.value, _fadeOutMs.value, _equalizerSettings.value)
     }
 
     fun setTrebleGain(db: Float) {
-        val updated = _equalizerSettings.value.copy(
-            trebleDb = db.coerceIn(-12f, 12f),
-            activePreset = EqualizerPreset.CUSTOM
-        )
-        _equalizerSettings.value = updated
-        player.updateEffects(_volumeGain.value, _fadeInMs.value, _fadeOutMs.value, updated)
+        _equalizerSettings.value = _equalizerSettings.value.copy(trebleGain = db, presetName = null)
+        player.updateEffects(_volumeGain.value, _fadeInMs.value, _fadeOutMs.value, _equalizerSettings.value)
     }
 
     fun resetEqualizer() {
-        setEqualizerPreset(EqualizerPreset.FLAT)
+        _equalizerSettings.value = EqualizerSettings()
+        player.updateEffects(_volumeGain.value, _fadeInMs.value, _fadeOutMs.value, _equalizerSettings.value)
     }
 
-    // Theme Mode Toggle
-    fun setThemeMode(isDark: Boolean?) {
+    fun setThemeMode(isDark: Boolean) {
         _isDarkTheme.value = isDark
     }
 
-    fun toggleTheme(currentDark: Boolean = _isDarkTheme.value ?: true) {
-        _isDarkTheme.value = !currentDark
+    fun toggleTheme() {
+        _isDarkTheme.value = !_isDarkTheme.value
     }
 
-    // Save As / Phone Storage Handlers
     fun prepareSaveAs(file: File) {
         _pendingSaveAsFile.value = file
     }
@@ -327,209 +358,187 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
         _pendingSaveAsFile.value = null
     }
 
-    fun executeSaveAs(targetUri: Uri) {
+    fun executeSaveAs(targetUri: Uri, onComplete: ((Boolean) -> Unit)? = null) {
         val file = _pendingSaveAsFile.value ?: return
         viewModelScope.launch {
-            _isProcessing.value = true
-            _processingStatus.value = "Menyimpan ke lokasi pilihan (Save As)..."
-            val success = StorageExporter.saveAsToUri(getApplication(), file, targetUri)
-            _isProcessing.value = false
+            val ok = StorageExporter.saveAsToUri(getApplication(), file, targetUri)
             _pendingSaveAsFile.value = null
-            _statusMessage.value = if (success) {
-                "Berhasil 'Save As' ke memori HP"
+            if (ok) {
+                _statusMessage.value = "File berhasil disimpan ke lokasi pilihan Anda!"
             } else {
-                "Gagal menyimpan ke lokasi pilihan"
+                _statusMessage.value = "Gagal menyimpan file ke lokasi tujuan."
             }
+            onComplete?.invoke(ok)
         }
     }
 
-    fun saveToDevicePublicMusic(file: File, mimeType: String = "audio/mpeg") {
+    fun saveToDevicePublicMusic(file: File, mimeType: String = "audio/mpeg", onComplete: ((Uri?) -> Unit)? = null) {
         viewModelScope.launch {
             _isProcessing.value = true
-            _processingStatus.value = "Menyimpan ke Memori HP (Folder Musik)..."
-            val savedUri = StorageExporter.saveToPhoneMemory(
-                getApplication(),
-                file,
-                file.name,
-                mimeType
-            )
-            _isProcessing.value = false
-            _statusMessage.value = if (savedUri != null) {
-                "Berhasil tersimpan di Memori HP (Folder Music/LishStudioRecord)"
-            } else {
-                "Gagal menyimpan ke memori HP"
-            }
-        }
-    }
-
-    // Export current trimmed/edited track
-    fun exportCurrentTrack(options: ExportOptions) {
-        val pcm = _activePcm.value ?: run {
-            _statusMessage.value = "Tidak ada audio yang dipilih untuk diekspor"
-            return
-        }
-
-        viewModelScope.launch {
-            _isProcessing.value = true
-            _processingProgress.value = 0.0f
-            _processingStatus.value = "Menerapkan pemotongan, equalizer & efek..."
-            player.pause()
-
+            _processingStatus.value = "Menyimpan ke Memori HP..."
             try {
-                val processedPcm = withContext(Dispatchers.Default) {
-                    // 1. Trim
-                    var result = AudioProcessor.trim(pcm, _startMs.value, _endMs.value)
-                    // 2. Equalizer
-                    result = AudioProcessor.applyEqualizer(result, options.equalizerSettings)
-                    // 3. Volume Gain
-                    if (options.volumeGain != 1.0f) {
-                        result = AudioProcessor.applyGain(result, options.volumeGain)
-                    }
-                    // 4. Fades
-                    if (options.fadeInMs > 0L || options.fadeOutMs > 0L) {
-                        result = AudioProcessor.applyFades(result, options.fadeInMs, options.fadeOutMs)
-                    }
-                    result
+                val uri = StorageExporter.saveToPhoneMemory(getApplication(), file, file.name, mimeType)
+                if (uri != null) {
+                    _statusMessage.value = "Tersimpan di Penyimpanan Internal -> Music/LishStudioRecord!"
+                } else {
+                    _statusMessage.value = "Gagal menyimpan ke memori HP"
                 }
-
-                _processingStatus.value = "Mengekspor ke format ${options.format.displayName}..."
-
-                val exportDir = getExportDirectory()
-                val safeName = options.fileName.trim().replace(Regex("[^a-zA-Z0-9_-]"), "_")
-                val fileNameWithExt = "$safeName.${options.format.extension}"
-                val outputFile = File(exportDir, fileNameWithExt)
-
-                AudioEncoder.encode(processedPcm, outputFile, options) { progress ->
-                    _processingProgress.value = progress
-                }
-
-                // Automatically save to phone's public Music folder
-                val publicUri = StorageExporter.saveToPhoneMemory(
-                    getApplication(),
-                    outputFile,
-                    outputFile.name,
-                    options.format.mimeType
-                )
-
                 refreshExportedLibrary()
-                val phoneStorageNote = if (publicUri != null) " & tersimpan di Memori HP (Folder Musik)" else ""
-                _statusMessage.value = "Audio berhasil disimpan: ${outputFile.name}$phoneStorageNote"
-            } catch (e: Exception) {
-                Log.e(TAG, "Export failed: ${e.message}")
-                _statusMessage.value = "Ekspor gagal: ${e.message}"
+                onComplete?.invoke(uri)
             } finally {
                 _isProcessing.value = false
-                _processingProgress.value = 0.0f
             }
         }
     }
 
-    // Merge Queue Management
+    fun exportCurrentTrack(options: ExportOptions, onComplete: ((File) -> Unit)? = null) {
+        val pcm = _activePcm.value ?: return
+        viewModelScope.launch {
+            _isProcessing.value = true
+            _processingStatus.value = "Menerapkan efek & memproses audio..."
+            _processingProgress.value = 0.1f
+
+            try {
+                val trimmed = AudioProcessor.trim(pcm, _startMs.value, _endMs.value)
+                val processed = AudioProcessor.applyEqualizer(
+                    AudioProcessor.applyFades(
+                        AudioProcessor.applyGain(trimmed, _volumeGain.value),
+                        _fadeInMs.value,
+                        _fadeOutMs.value
+                    ),
+                    _equalizerSettings.value
+                )
+
+                _processingStatus.value = "Mengenkode ke format ${options.format.displayName}..."
+                val exportDir = getExportDirectory()
+                val safeName = options.fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                val finalFileName = if (safeName.endsWith(".${options.format.extension}", true)) safeName else "$safeName.${options.format.extension}"
+                val targetFile = File(exportDir, finalFileName)
+
+                AudioEncoder.encode(processed, targetFile, options) { progress ->
+                    _processingProgress.value = 0.2f + (progress * 0.7f)
+                }
+
+                // If track has cover art and is MP3, embed it
+                val trackCover = _activeTrack.value?.coverArtBytes
+                if (options.format == AudioFormat.MP3 && trackCover != null && trackCover.isNotEmpty()) {
+                    _processingStatus.value = "Menanamkan cover album..."
+                    val meta = SongMetadata(
+                        title = options.fileName.substringBeforeLast("."),
+                        artist = _activeTrack.value?.artist ?: "Artis Tidak Diketahui",
+                        coverArtBytes = trackCover,
+                        coverMimeType = AudioTagManager.detectMimeType(trackCover)
+                    )
+                    AudioTagManager.writeMp3Tags(targetFile, targetFile, meta)
+                }
+
+                // Also save to device public music directory
+                StorageExporter.saveToPhoneMemory(getApplication(), targetFile, finalFileName, options.format.mimeType)
+
+                refreshExportedLibrary()
+                _statusMessage.value = "Ekspor sukses: $finalFileName (Tersimpan di Music/LishStudioRecord)"
+                onComplete?.invoke(targetFile)
+            } catch (e: Exception) {
+                Log.e(TAG, "Export failed: ${e.message}", e)
+                _statusMessage.value = "Ekspor gagal: ${e.localizedMessage}"
+            } finally {
+                _isProcessing.value = false
+            }
+        }
+    }
+
+    // --- Merge Actions ---
     fun addTrackToMerge(track: AudioTrackInfo) {
-        val current = _mergeTracks.value.toMutableList()
-        current.add(track)
-        _mergeTracks.value = current
-        _statusMessage.value = "${track.title} ditambahkan ke antrean gabung"
+        val list = _mergeTracks.value.toMutableList()
+        list.add(track)
+        _mergeTracks.value = list
     }
 
     fun clearMergeTracks() {
         _mergeTracks.value = emptyList()
-        _statusMessage.value = "Antrean gabung dikosongkan"
     }
 
     fun removeTrackFromMerge(index: Int) {
-        val current = _mergeTracks.value.toMutableList()
-        if (index in current.indices) {
-            val removed = current.removeAt(index)
-            _mergeTracks.value = current
-            _statusMessage.value = "${removed.title} dihapus dari antrean"
+        val list = _mergeTracks.value.toMutableList()
+        if (index in list.indices) {
+            list.removeAt(index)
+            _mergeTracks.value = list
         }
     }
 
     fun moveTrackMergeUp(index: Int) {
         if (index <= 0) return
-        val current = _mergeTracks.value.toMutableList()
-        val item = current.removeAt(index)
-        current.add(index - 1, item)
-        _mergeTracks.value = current
+        val list = _mergeTracks.value.toMutableList()
+        val item = list.removeAt(index)
+        list.add(index - 1, item)
+        _mergeTracks.value = list
     }
 
     fun moveTrackMergeDown(index: Int) {
-        val current = _mergeTracks.value.toMutableList()
-        if (index >= current.size - 1) return
-        val item = current.removeAt(index)
-        current.add(index + 1, item)
-        _mergeTracks.value = current
+        val list = _mergeTracks.value.toMutableList()
+        if (index >= list.size - 1) return
+        val item = list.removeAt(index)
+        list.add(index + 1, item)
+        _mergeTracks.value = list
     }
 
-    fun setMergeGapMs(ms: Long) {
-        _mergeGapMs.value = ms.coerceAtLeast(0L)
+    fun setMergeGapMs(gap: Long) {
+        _mergeGapMs.value = gap
     }
 
-    fun executeMerge(options: ExportOptions) {
+    fun executeMerge(fileName: String, format: AudioFormat = AudioFormat.MP3, onComplete: ((File) -> Unit)? = null) {
         val tracks = _mergeTracks.value
         if (tracks.size < 2) {
-            _statusMessage.value = "Tambahkan minimal 2 lagu untuk digabungkan"
+            _statusMessage.value = "Pilih minimal 2 trek audio untuk digabungkan"
             return
         }
 
         viewModelScope.launch {
             _isProcessing.value = true
-            _processingProgress.value = 0.0f
-            _processingStatus.value = "Mendekode trek antrean..."
-            player.pause()
+            _processingStatus.value = "Mendekode trek audio..."
+            _processingProgress.value = 0.1f
 
             try {
+                val app = getApplication<Application>()
                 val pcmList = mutableListOf<PcmData>()
-                tracks.forEachIndexed { idx, track ->
-                    _processingStatus.value = "Mendekode (${idx + 1}/${tracks.size}): ${track.title}"
-                    val pcm = withContext(Dispatchers.IO) {
-                        if (track.file != null) {
-                            AudioDecoder.decode(getApplication(), track.file)
-                        } else if (track.uri != null) {
-                            AudioDecoder.decode(getApplication(), track.uri)
-                        } else {
-                            throw IllegalStateException("No source for ${track.title}")
-                        }
-                    }
+
+                for ((idx, t) in tracks.withIndex()) {
+                    _processingStatus.value = "Mendekode ${idx + 1}/${tracks.size}: ${t.title}..."
+                    val source = t.file ?: t.uri ?: continue
+                    val pcm = AudioDecoder.decode(app, source)
                     pcmList.add(pcm)
-                    _processingProgress.value = ((idx + 1).toFloat() / tracks.size) * 0.4f
+                    _processingProgress.value = 0.1f + ((idx.toFloat() / tracks.size) * 0.4f)
                 }
 
-                _processingStatus.value = "Menggabungkan trek audio..."
-                val mergedPcm = withContext(Dispatchers.Default) {
-                    AudioProcessor.mergeTracks(pcmList, _mergeGapMs.value)
-                }
+                _processingStatus.value = "Menggabungkan trek PCM..."
+                _processingProgress.value = 0.55f
+                val mergedPcm = AudioProcessor.mergeTracks(pcmList, _mergeGapMs.value)
 
-                _processingStatus.value = "Mengekspor hasil penggabungan..."
+                _processingStatus.value = "Mengenkode ke format ${format.displayName}..."
                 val exportDir = getExportDirectory()
-                val safeName = options.fileName.trim().replace(Regex("[^a-zA-Z0-9_-]"), "_")
-                val outputFile = File(exportDir, "$safeName.${options.format.extension}")
+                val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                val finalFileName = if (safeName.endsWith(".${format.extension}", true)) safeName else "$safeName.${format.extension}"
+                val targetFile = File(exportDir, finalFileName)
 
-                AudioEncoder.encode(mergedPcm, outputFile, options) { progress ->
-                    _processingProgress.value = 0.4f + progress * 0.6f
+                val options = ExportOptions(fileName = safeName, format = format)
+                AudioEncoder.encode(mergedPcm, targetFile, options) { progress ->
+                    _processingProgress.value = 0.6f + (progress * 0.35f)
                 }
 
-                StorageExporter.saveToPhoneMemory(
-                    getApplication(),
-                    outputFile,
-                    outputFile.name,
-                    options.format.mimeType
-                )
-
+                StorageExporter.saveToPhoneMemory(app, targetFile, finalFileName, format.mimeType)
                 refreshExportedLibrary()
-                _statusMessage.value = "Berhasil menggabungkan ${tracks.size} lagu & tersimpan di Memori HP"
+                _statusMessage.value = "Penggabungan selesai: $finalFileName (Tersimpan di Music/LishStudioRecord)"
+                onComplete?.invoke(targetFile)
             } catch (e: Exception) {
-                Log.e(TAG, "Merge failed: ${e.message}")
-                _statusMessage.value = "Gagal menggabungkan: ${e.message}"
+                Log.e(TAG, "Merge failed: ${e.message}", e)
+                _statusMessage.value = "Gagal menggabungkan trek: ${e.localizedMessage}"
             } finally {
                 _isProcessing.value = false
-                _processingProgress.value = 0.0f
             }
         }
     }
 
-    // Format Converter Management
+    // --- Converter Actions ---
     fun selectTrackForConverter(track: AudioTrackInfo) {
         _converterTrack.value = track
     }
@@ -542,65 +551,69 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
         _converterBitrate.value = bitrate
     }
 
-    fun executeConvert(fileName: String) {
-        val track = _converterTrack.value ?: run {
-            _statusMessage.value = "Pilih lagu yang akan dikonversi terlebih dahulu"
+    fun executeConvert(fileName: String, onComplete: ((File) -> Unit)? = null) {
+        val track = _converterTrack.value
+        if (track == null) {
+            _statusMessage.value = "Pilih trek yang akan dikonversi"
             return
         }
 
         viewModelScope.launch {
             _isProcessing.value = true
-            _processingProgress.value = 0.0f
-            _processingStatus.value = "Membaca file sumber..."
+            _processingStatus.value = "Mendekode audio asli..."
+            _processingProgress.value = 0.2f
 
             try {
-                val pcm = withContext(Dispatchers.IO) {
-                    if (track.file != null) {
-                        AudioDecoder.decode(getApplication(), track.file)
-                    } else if (track.uri != null) {
-                        AudioDecoder.decode(getApplication(), track.uri)
-                    } else {
-                        throw IllegalStateException("No file or URI")
-                    }
-                }
+                val app = getApplication<Application>()
+                val source = track.file ?: track.uri ?: return@launch
+                val pcm = AudioDecoder.decode(app, source)
 
-                _processingStatus.value = "Mengonversi ke ${_converterFormat.value.displayName}..."
+                _processingStatus.value = "Mengenkode ke ${_converterFormat.value.displayName}..."
+                _processingProgress.value = 0.5f
+
                 val exportDir = getExportDirectory()
-                val safeName = fileName.trim().ifEmpty { track.title + "_converted" }.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-                val outputFile = File(exportDir, "$safeName.${_converterFormat.value.extension}")
+                val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                val finalFileName = if (safeName.endsWith(".${_converterFormat.value.extension}", true)) safeName else "$safeName.${_converterFormat.value.extension}"
+                val targetFile = File(exportDir, finalFileName)
 
                 val options = ExportOptions(
+                    fileName = safeName,
                     format = _converterFormat.value,
-                    bitrateKbps = _converterBitrate.value,
-                    fileName = safeName
+                    bitrateKbps = _converterBitrate.value
                 )
 
-                AudioEncoder.encode(pcm, outputFile, options) { progress ->
-                    _processingProgress.value = progress
+                AudioEncoder.encode(pcm, targetFile, options) { progress ->
+                    _processingProgress.value = 0.5f + (progress * 0.45f)
                 }
 
-                StorageExporter.saveToPhoneMemory(
-                    getApplication(),
-                    outputFile,
-                    outputFile.name,
-                    _converterFormat.value.mimeType
-                )
+                // Carry over cover art if converting to MP3
+                val cover = track.coverArtBytes
+                if (_converterFormat.value == AudioFormat.MP3 && cover != null && cover.isNotEmpty()) {
+                    val meta = SongMetadata(
+                        title = safeName.substringBeforeLast("."),
+                        artist = track.artist,
+                        coverArtBytes = cover,
+                        coverMimeType = AudioTagManager.detectMimeType(cover)
+                    )
+                    AudioTagManager.writeMp3Tags(targetFile, targetFile, meta)
+                }
 
+                StorageExporter.saveToPhoneMemory(app, targetFile, finalFileName, _converterFormat.value.mimeType)
                 refreshExportedLibrary()
-                _statusMessage.value = "Konversi selesai: ${outputFile.name} & tersimpan di Memori HP"
+                _statusMessage.value = "Konversi berhasil: $finalFileName (Tersimpan di Music/LishStudioRecord)"
+                onComplete?.invoke(targetFile)
             } catch (e: Exception) {
-                Log.e(TAG, "Conversion failed: ${e.message}")
-                _statusMessage.value = "Konversi gagal: ${e.message}"
+                Log.e(TAG, "Conversion failed: ${e.message}", e)
+                _statusMessage.value = "Konversi gagal: ${e.localizedMessage}"
             } finally {
                 _isProcessing.value = false
-                _processingProgress.value = 0.0f
             }
         }
     }
 
-    // Library file playback & sharing
-    fun toggleLibraryPlay(file: File) {
-        if (_libraryPlayingPath.value == file.absolutePath) {
+    // --- Library Actions ---
+    fun toggleLibraryPlay(audio: ExportedAudio) {
+        if (_libraryPlayingPath.value == audio.file.absolutePath) {
             libraryMediaPlayer?.stop()
             libraryMediaPlayer?.release()
             libraryMediaPlayer = null
@@ -608,96 +621,90 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             libraryMediaPlayer?.stop()
             libraryMediaPlayer?.release()
-            libraryMediaPlayer = null
-
-            try {
-                libraryMediaPlayer = MediaPlayer().apply {
-                    setDataSource(file.absolutePath)
-                    prepare()
-                    start()
-                    setOnCompletionListener {
-                        _libraryPlayingPath.value = null
-                    }
+            libraryMediaPlayer = MediaPlayer().apply {
+                setDataSource(audio.file.absolutePath)
+                setOnCompletionListener {
+                    _libraryPlayingPath.value = null
                 }
-                _libraryPlayingPath.value = file.absolutePath
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed playing library file: ${e.message}")
-                _statusMessage.value = "Gagal memutar file: ${e.message}"
+                prepare()
+                start()
             }
+            _libraryPlayingPath.value = audio.file.absolutePath
         }
     }
 
-    fun shareExportedFile(context: Context, file: File) {
+    fun shareExportedFile(context: Context, audio: ExportedAudio) {
         try {
             val contentUri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
-                file
+                audio.file
             )
             val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "audio/*"
+                type = audio.format.mimeType
                 putExtra(Intent.EXTRA_STREAM, contentUri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(Intent.createChooser(intent, "Bagikan Audio"))
         } catch (e: Exception) {
             Log.e(TAG, "Share failed: ${e.message}")
-            _statusMessage.value = "Gagal membagikan: ${e.message}"
+            _statusMessage.value = "Gagal membagikan file: ${e.localizedMessage}"
         }
     }
 
-    fun deleteExportedFile(file: File) {
-        if (_libraryPlayingPath.value == file.absolutePath) {
-            libraryMediaPlayer?.stop()
-            libraryMediaPlayer?.release()
-            libraryMediaPlayer = null
-            _libraryPlayingPath.value = null
+    fun deleteExportedFile(audio: ExportedAudio) {
+        try {
+            if (_libraryPlayingPath.value == audio.file.absolutePath) {
+                libraryMediaPlayer?.stop()
+                libraryMediaPlayer?.release()
+                libraryMediaPlayer = null
+                _libraryPlayingPath.value = null
+            }
+            if (audio.file.exists()) {
+                audio.file.delete()
+            }
+            refreshExportedLibrary()
+            _statusMessage.value = "File dihapus: ${audio.title}"
+        } catch (e: Exception) {
+            _statusMessage.value = "Gagal menghapus file: ${e.localizedMessage}"
         }
-        if (file.exists()) {
-            file.delete()
-        }
-        refreshExportedLibrary()
-        _statusMessage.value = "File dihapus"
     }
 
-    private fun getExportDirectory(): File {
+    fun getExportDirectory(): File {
         val app = getApplication<Application>()
-        val dir = app.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
-            ?: File(app.filesDir, "exported_audio")
-        if (!dir.exists()) dir.mkdirs()
+        val dir = File(app.getExternalFilesDir(null) ?: app.filesDir, "LishStudioRecord")
+        if (!dir.exists()) {
+            dir.mkdirs()
+        }
         return dir
     }
 
-    // --- Tag Editor Operations ---
+    // --- Tag Editor Actions ---
     fun loadTagFromUri(uri: Uri) {
         viewModelScope.launch {
             _isProcessing.value = true
-            _processingStatus.value = "Membaca informasi lagu..."
-            _processingProgress.value = 0.4f
+            _processingStatus.value = "Membaca tag & info lagu..."
             try {
                 val app = getApplication<Application>()
-                val mimeType = app.contentResolver.getType(uri)
-                val ext = when {
-                    mimeType?.contains("mp3", true) == true || mimeType?.contains("mpeg", true) == true -> "mp3"
-                    mimeType?.contains("wav", true) == true -> "wav"
-                    mimeType?.contains("m4a", true) == true || mimeType?.contains("mp4", true) == true || mimeType?.contains("aac", true) == true -> "m4a"
-                    mimeType?.contains("flac", true) == true -> "flac"
-                    else -> uri.lastPathSegment?.substringAfterLast('.', "")?.takeIf { it.isNotBlank() } ?: "mp3"
-                }
-                val tempFile = File(app.cacheDir, "tag_edit_temp_${System.currentTimeMillis()}.$ext")
+                _selectedTagUri.value = uri
+
+                // Copy to cache file for reliable tagging operations
+                val cacheDir = File(app.cacheDir, "tag_editor")
+                if (!cacheDir.exists()) cacheDir.mkdirs()
+                val tempFile = File(cacheDir, "input_tag_${System.currentTimeMillis()}.mp3")
                 app.contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(tempFile).use { output ->
-                        input.copyTo(output)
+                    FileOutputStream(tempFile).use { out ->
+                        input.copyTo(out)
                     }
                 }
-                val meta = AudioTagManager.readMetadata(app, uri, tempFile)
                 _selectedTagFile.value = tempFile
-                _selectedTagUri.value = uri
-                _tagMetadata.value = meta
-                _statusMessage.value = "File berhasil dimuat: ${meta.title.ifBlank { "Audio" }}"
+
+                val metadata = AudioTagManager.readMetadata(app, uri = uri, file = tempFile)
+                _tagMetadata.value = metadata
+                _statusMessage.value = "Tag & Cover lagu berhasil dimuat!"
             } catch (e: Exception) {
-                Log.e(TAG, "Failed loading tag metadata: ${e.message}")
-                _statusMessage.value = "Gagal membaca info lagu: ${e.message}"
+                Log.e(TAG, "Failed reading tags from uri: ${e.message}", e)
+                _statusMessage.value = "Gagal membaca tag lagu: ${e.localizedMessage}"
             } finally {
                 _isProcessing.value = false
             }
@@ -708,17 +715,17 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isProcessing.value = true
             _processingStatus.value = "Membaca informasi lagu..."
-            _processingProgress.value = 0.4f
             try {
                 val app = getApplication<Application>()
-                val meta = AudioTagManager.readMetadata(app, null, file)
                 _selectedTagFile.value = file
                 _selectedTagUri.value = null
-                _tagMetadata.value = meta
-                _statusMessage.value = "Memuat tag: ${meta.title.ifBlank { file.nameWithoutExtension }}"
+
+                val metadata = AudioTagManager.readMetadata(app, file = file)
+                _tagMetadata.value = metadata
+                _statusMessage.value = "Informasi lagu berhasil dimuat!"
             } catch (e: Exception) {
-                Log.e(TAG, "Failed loading tag metadata from file: ${e.message}")
-                _statusMessage.value = "Gagal membaca info file: ${e.message}"
+                Log.e(TAG, "Failed reading tags: ${e.message}", e)
+                _statusMessage.value = "Gagal membaca tag: ${e.localizedMessage}"
             } finally {
                 _isProcessing.value = false
             }
@@ -730,104 +737,100 @@ class AudioViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateCoverArt(bytes: ByteArray, mimeType: String = "image/jpeg") {
-        _tagMetadata.value = _tagMetadata.value?.copy(
+        val current = _tagMetadata.value ?: return
+        _tagMetadata.value = current.copy(
             coverArtBytes = bytes,
             coverMimeType = mimeType
         )
-        _statusMessage.value = "Gambar cover diperbarui"
+        _statusMessage.value = "Cover album berhasil diperbarui!"
     }
 
     fun applyPresetCover(presetIndex: Int) {
-        val (bytes, mime) = AudioTagManager.generatePresetCover(presetIndex)
-        updateCoverArt(bytes, mime)
-        _statusMessage.value = "Cover album preset berhasil dipasang"
+        val current = _tagMetadata.value ?: return
+        val (bytes, mime) = AudioTagManager.generatePresetCover(presetIndex, 600)
+        _tagMetadata.value = current.copy(
+            coverArtBytes = bytes,
+            coverMimeType = mime
+        )
+        _statusMessage.value = "Preset cover album berhasil diterapkan!"
     }
 
     fun removeCoverArt() {
-        _tagMetadata.value = _tagMetadata.value?.copy(
-            coverArtBytes = null
-        )
-        _statusMessage.value = "Gambar cover dihapus"
+        val current = _tagMetadata.value ?: return
+        _tagMetadata.value = current.copy(coverArtBytes = null)
+        _statusMessage.value = "Cover album dihapus"
     }
 
+    /**
+     * Saves metadata and embedded APIC cover art to the MP3 file,
+     * writes directly to phone memory Music/LishStudioRecord/,
+     * updates SAF Uri if present, and scans file into Android MediaStore.
+     */
     fun saveSongMetadata(customFileName: String? = null, onComplete: ((File) -> Unit)? = null) {
         val currentMeta = _tagMetadata.value ?: return
         val currentFile = _selectedTagFile.value ?: return
-        val app = getApplication<Application>()
 
         viewModelScope.launch {
             _isProcessing.value = true
-            _processingStatus.value = "Menyimpan informasi & cover lagu..."
-            _processingProgress.value = 0.25f
+            _processingStatus.value = "Menanamkan Cover Album & Tag ID3v2..."
+            _processingProgress.value = 0.2f
 
+            val app = getApplication<Application>()
             try {
-                val safeName = if (!customFileName.isNullOrBlank()) {
-                    customFileName.trim().replace(Regex("[^a-zA-Z0-9_\\-\\s]"), "_")
-                } else if (currentMeta.title.isNotBlank()) {
-                    val combined = if (currentMeta.artist.isNotBlank()) {
-                        "${currentMeta.artist} - ${currentMeta.title}"
-                    } else {
-                        currentMeta.title
-                    }
-                    combined.replace(Regex("[^a-zA-Z0-9_\\-\\s]"), "_")
-                } else {
-                    "lagu_edited_${System.currentTimeMillis()}"
-                }
+                val safeName = (customFileName ?: currentMeta.title.ifBlank { currentFile.nameWithoutExtension })
+                    .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                    .let { if (it.endsWith(".mp3", true)) it else "$it.mp3" }
 
                 val exportDir = getExportDirectory()
-                val targetFile = File(exportDir, "$safeName.mp3")
+                val targetFile = File(exportDir, safeName)
 
-                _processingProgress.value = 0.6f
                 val isMp3 = AudioTagManager.isMp3File(currentFile)
-                val success = if (isMp3) {
-                    AudioTagManager.writeMp3Tags(currentFile, targetFile, currentMeta)
+                val success: Boolean
+
+                if (isMp3) {
+                    // Lossless ID3v2.3 tag writing directly from current file
+                    success = AudioTagManager.writeMp3Tags(currentFile, targetFile, currentMeta)
                 } else {
+                    // Convert non-MP3 to MP3 first
+                    _processingStatus.value = "Mendekode audio untuk format MP3..."
                     val pcm = AudioDecoder.decode(app, currentFile)
-                    val rawMp3 = File(app.cacheDir, "temp_encode_${System.currentTimeMillis()}.mp3")
-                    AudioEncoder.encode(pcm, rawMp3, ExportOptions(format = AudioFormat.MP3, bitrateKbps = 192))
-                    val res = AudioTagManager.writeMp3Tags(rawMp3, targetFile, currentMeta)
-                    try { rawMp3.delete() } catch (_: Exception) {}
-                    res
+                    val rawMp3 = File(app.cacheDir, "raw_${System.currentTimeMillis()}.mp3")
+                    AudioEncoder.encode(pcm, rawMp3, ExportOptions(safeName, AudioFormat.MP3))
+                    success = AudioTagManager.writeMp3Tags(rawMp3, targetFile, currentMeta)
+                    rawMp3.delete()
                 }
 
-                if (success && targetFile.exists() && targetFile.length() > 0) {
-                    // 1. Automatically save to Phone Memory (Music/LishStudioRecord) so it is indexed and visible in player apps
+                _processingProgress.value = 0.7f
+
+                if (success && targetFile.exists()) {
+                    _processingStatus.value = "Menyimpan ke Memori HP & Memindai Galeri..."
+
+                    // 1. Save directly to public phone storage (Music/LishStudioRecord) & scan MediaStore
                     val publicUri = StorageExporter.saveToPhoneMemory(
                         app,
                         targetFile,
-                        targetFile.name,
+                        safeName,
                         "audio/mpeg"
                     )
 
-                    // 2. If the file was opened from a content Uri, also save back to that Uri
+                    // 2. If opened from an existing Content URI via SAF, write back to original Uri as well
                     val sourceUri = _selectedTagUri.value
-                    if (sourceUri != null) {
-                        try {
-                            app.contentResolver.openOutputStream(sourceUri, "wt")?.use { out ->
-                                FileInputStream(targetFile).use { input ->
-                                    input.copyTo(out)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Could not write back to source Uri: ${e.message}")
-                        }
+                    if (sourceUri != null && sourceUri.scheme == "content") {
+                        StorageExporter.saveAsToUri(app, targetFile, sourceUri)
                     }
 
-                    // 3. Confirm bit-level persistence by reloading metadata directly from the written targetFile
-                    val reloadedMeta = AudioTagManager.readMetadata(app, null, targetFile)
-                    _tagMetadata.value = reloadedMeta
+                    // Update selected file to the newly saved file
                     _selectedTagFile.value = targetFile
 
                     refreshExportedLibrary()
-                    val phoneMsg = if (publicUri != null) " & tersimpan di Memori HP (Folder Musik)" else ""
-                    _statusMessage.value = "Informasi & cover lagu berhasil disimpan ke Koleksi$phoneMsg!"
+                    _statusMessage.value = "Cover & Tag lagu berhasil disimpan ke Memori HP (Music/LishStudioRecord)!"
                     onComplete?.invoke(targetFile)
                 } else {
-                    _statusMessage.value = "Gagal menyimpan info lagu."
+                    _statusMessage.value = "Gagal menulis tag ke file MP3"
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error saving song metadata: ${e.message}", e)
-                _statusMessage.value = "Gagal menyimpan: ${e.message}"
+                Log.e(TAG, "Save song metadata failed: ${e.message}", e)
+                _statusMessage.value = "Gagal menyimpan info lagu: ${e.localizedMessage}"
             } finally {
                 _isProcessing.value = false
             }

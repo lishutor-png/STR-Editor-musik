@@ -9,122 +9,133 @@ import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 
 object AudioDecoder {
     private const val TAG = "AudioDecoder"
     private const val TIMEOUT_US = 5000L
 
-    /**
-     * Decodes an audio file or URI into [PcmData].
-     */
     suspend fun decode(context: Context, fileOrUri: Any): PcmData = withContext(Dispatchers.IO) {
-        // If it's a WAV file, we can try direct WAV parsing first for speed
-        if (fileOrUri is File && fileOrUri.name.endsWith(".wav", ignoreCase = true)) {
-            try {
-                return@withContext parseWavFile(fileOrUri)
-            } catch (e: Exception) {
-                Log.w(TAG, "Direct WAV parse failed, falling back to MediaCodec: ${e.message}")
-            }
-        }
-
-        // Use Android MediaExtractor & MediaCodec to decode any format (MP3, AAC, etc.)
         val extractor = MediaExtractor()
+        var codec: MediaCodec? = null
+
         try {
             when (fileOrUri) {
-                is File -> extractor.setDataSource(fileOrUri.absolutePath)
-                is Uri -> extractor.setDataSource(context, fileOrUri, null)
-                else -> throw IllegalArgumentException("Expected File or Uri")
+                is File -> {
+                    if (fileOrUri.name.endsWith(".wav", ignoreCase = true)) {
+                        return@withContext parseWavFile(fileOrUri)
+                    }
+                    extractor.setDataSource(fileOrUri.absolutePath)
+                }
+                is Uri -> {
+                    val scheme = fileOrUri.scheme
+                    val path = fileOrUri.path
+                    if (path != null && path.endsWith(".wav", ignoreCase = true)) {
+                        context.contentResolver.openInputStream(fileOrUri)?.use { input ->
+                            return@withContext parseWavStream(input)
+                        }
+                    }
+                    extractor.setDataSource(context, fileOrUri, null)
+                }
+                else -> throw IllegalArgumentException("fileOrUri must be File or Uri")
             }
 
             var audioTrackIndex = -1
-            var audioFormat: MediaFormat? = null
+            var inputFormat: MediaFormat? = null
+
             for (i in 0 until extractor.trackCount) {
                 val format = extractor.getTrackFormat(i)
                 val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
                 if (mime.startsWith("audio/")) {
                     audioTrackIndex = i
-                    audioFormat = format
+                    inputFormat = format
                     break
                 }
             }
 
-            if (audioTrackIndex < 0 || audioFormat == null) {
-                throw IllegalStateException("No audio track found in media source")
+            if (audioTrackIndex == -1 || inputFormat == null) {
+                throw IllegalStateException("No audio track found in media")
             }
 
             extractor.selectTrack(audioTrackIndex)
-            val mime = audioFormat.getString(MediaFormat.KEY_MIME)!!
-            val sampleRate = if (audioFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            } else 44100
-            val channelCount = if (audioFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            } else 2
-
-            val codec = MediaCodec.createDecoderByType(mime)
-            codec.configure(audioFormat, null, null, 0)
+            val mime = inputFormat.getString(MediaFormat.KEY_MIME) ?: "audio/raw"
+            codec = MediaCodec.createDecoderByType(mime)
+            codec.configure(inputFormat, null, null, 0)
             codec.start()
 
-            val pcmBytes = ByteArrayOutputStream()
-            val bufferInfo = MediaCodec.BufferInfo()
-            var isInputEOS = false
-            var isOutputEOS = false
+            val sampleRate = if (inputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            } else 44100
 
-            while (!isOutputEOS) {
-                if (!isInputEOS) {
-                    val inputBufIndex = codec.dequeueInputBuffer(TIMEOUT_US)
-                    if (inputBufIndex >= 0) {
-                        val inputBuf = codec.getInputBuffer(inputBufIndex) ?: continue
-                        inputBuf.clear()
-                        val sampleSize = extractor.readSampleData(inputBuf, 0)
+            val channels = if (inputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            } else 2
+
+            val bufferInfo = MediaCodec.BufferInfo()
+            val sampleChunks = ArrayList<ShortArray>()
+            var isEos = false
+
+            while (!isEos) {
+                val inIndex = codec.dequeueInputBuffer(TIMEOUT_US)
+                if (inIndex >= 0) {
+                    val inBuffer = codec.getInputBuffer(inIndex)
+                    if (inBuffer != null) {
+                        val sampleSize = extractor.readSampleData(inBuffer, 0)
                         if (sampleSize < 0) {
-                            codec.queueInputBuffer(inputBufIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            isInputEOS = true
+                            codec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         } else {
-                            val presentationTimeUs = extractor.sampleTime
-                            codec.queueInputBuffer(inputBufIndex, 0, sampleSize, presentationTimeUs, 0)
+                            val timeUs = extractor.sampleTime
+                            codec.queueInputBuffer(inIndex, 0, sampleSize, timeUs, 0)
                             extractor.advance()
                         }
                     }
                 }
 
-                val outputBufIndex = codec.dequeueOutputBuffer(bufferInfo, TIMEOUT_US)
-                if (outputBufIndex >= 0) {
-                    val outputBuf = codec.getOutputBuffer(outputBufIndex)
-                    if (outputBuf != null && bufferInfo.size > 0) {
-                        outputBuf.position(bufferInfo.offset)
-                        outputBuf.limit(bufferInfo.offset + bufferInfo.size)
-                        val chunk = ByteArray(bufferInfo.size)
-                        outputBuf.get(chunk)
-                        pcmBytes.write(chunk)
+                val outIndex = codec.dequeueOutputBuffer(bufferInfo, TIMEOUT_US)
+                if (outIndex >= 0) {
+                    val outBuffer = codec.getOutputBuffer(outIndex)
+                    if (outBuffer != null && bufferInfo.size > 0) {
+                        outBuffer.position(bufferInfo.offset)
+                        outBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                        outBuffer.order(ByteOrder.LITTLE_ENDIAN)
+
+                        val shortBuffer = outBuffer.asShortBuffer()
+                        val shorts = ShortArray(shortBuffer.remaining())
+                        shortBuffer.get(shorts)
+                        sampleChunks.add(shorts)
                     }
-                    codec.releaseOutputBuffer(outputBufIndex, false)
+                    codec.releaseOutputBuffer(outIndex, false)
+
                     if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                        isOutputEOS = true
+                        isEos = true
                     }
-                } else if (outputBufIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    val newFormat = codec.outputFormat
-                    Log.d(TAG, "Decoder output format changed: $newFormat")
                 }
             }
 
-            codec.stop()
-            codec.release()
+            val totalSamples = sampleChunks.sumOf { it.size }
+            val flatSamples = ShortArray(totalSamples)
+            var offset = 0
+            for (chunk in sampleChunks) {
+                System.arraycopy(chunk, 0, flatSamples, offset, chunk.size)
+                offset += chunk.size
+            }
 
-            // Convert PCM 16-bit little-endian byte array to ShortArray
-            val rawBytes = pcmBytes.toByteArray()
-            val shortBuffer = ByteBuffer.wrap(rawBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-            val shortArray = ShortArray(shortBuffer.remaining())
-            shortBuffer.get(shortArray)
-
-            return@withContext PcmData(sampleRate, channelCount, shortArray)
+            PcmData(sampleRate, channels, flatSamples)
+        } catch (e: Exception) {
+            Log.e(TAG, "Audio decoding failed: ${e.message}", e)
+            throw e
         } finally {
+            try {
+                codec?.stop()
+                codec?.release()
+            } catch (e: Exception) {
+                // ignore
+            }
             try {
                 extractor.release()
             } catch (e: Exception) {
@@ -133,115 +144,112 @@ object AudioDecoder {
         }
     }
 
-    /**
-     * Parses standard 16-bit PCM RIFF WAV file directly.
-     */
     fun parseWavFile(file: File): PcmData {
-        FileInputStream(file).use { fis ->
-            return parseWavStream(fis)
-        }
+        FileInputStream(file).use { return parseWavStream(it) }
     }
 
     fun parseWavStream(stream: InputStream): PcmData {
         val header = ByteArray(12)
         if (stream.read(header) < 12) throw IllegalStateException("Invalid WAV file: header too short")
-        val riff = String(header, 0, 4)
-        val wave = String(header, 8, 4)
+        val riff = String(header, 0, 4, Charsets.UTF_8)
+        val wave = String(header, 8, 4, Charsets.UTF_8)
         if (riff != "RIFF" || wave != "WAVE") {
-            throw IllegalStateException("Not a valid RIFF WAVE audio stream")
+            throw IllegalStateException("Invalid WAV format: missing RIFF/WAVE header")
         }
 
         var sampleRate = 44100
         var channels = 2
-        var audioFormat = 1 // 1 = PCM
         var bitsPerSample = 16
-        var pcmData: ByteArray? = null
-
         val chunkHeader = ByteArray(8)
+
         while (stream.read(chunkHeader) == 8) {
-            val chunkId = String(chunkHeader, 0, 4)
+            val chunkId = String(chunkHeader, 0, 4, Charsets.UTF_8)
             val chunkSize = ByteBuffer.wrap(chunkHeader, 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
 
-            when (chunkId) {
-                "fmt " -> {
-                    val fmtData = ByteArray(chunkSize)
-                    stream.read(fmtData)
-                    val bb = ByteBuffer.wrap(fmtData).order(ByteOrder.LITTLE_ENDIAN)
-                    audioFormat = bb.short.toInt()
-                    channels = bb.short.toInt()
-                    sampleRate = bb.int
-                    bb.int // byteRate
-                    bb.short // blockAlign
-                    bitsPerSample = bb.short.toInt()
+            if (chunkId == "fmt ") {
+                val fmtData = ByteArray(chunkSize)
+                stream.read(fmtData)
+                val buf = ByteBuffer.wrap(fmtData).order(ByteOrder.LITTLE_ENDIAN)
+                val audioFormat = buf.short.toInt()
+                channels = buf.short.toInt()
+                sampleRate = buf.int
+                buf.int // byteRate
+                buf.short // blockAlign
+                bitsPerSample = buf.short.toInt()
+            } else if (chunkId == "data") {
+                val pcmBytes = ByteArray(chunkSize)
+                var readTotal = 0
+                while (readTotal < chunkSize) {
+                    val count = stream.read(pcmBytes, readTotal, chunkSize - readTotal)
+                    if (count <= 0) break
+                    readTotal += count
                 }
-                "data" -> {
-                    pcmData = ByteArray(chunkSize)
-                    var bytesRead = 0
-                    while (bytesRead < chunkSize) {
-                        val read = stream.read(pcmData, bytesRead, chunkSize - bytesRead)
-                        if (read == -1) break
-                        bytesRead += read
-                    }
-                    break
-                }
-                else -> {
-                    // Skip unknown chunk
-                    var remaining = chunkSize.toLong()
-                    while (remaining > 0) {
-                        val skipped = stream.skip(remaining)
-                        if (skipped <= 0) break
-                        remaining -= skipped
-                    }
-                }
+
+                val shortsCount = readTotal / 2
+                val shorts = ShortArray(shortsCount)
+                ByteBuffer.wrap(pcmBytes, 0, readTotal).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
+                return PcmData(sampleRate, channels, shorts)
+            } else {
+                stream.skip(chunkSize.toLong())
             }
         }
-
-        if (pcmData == null) {
-            throw IllegalStateException("No PCM data chunk found in WAV")
-        }
-
-        if (bitsPerSample != 16) {
-            Log.w(TAG, "WAV has $bitsPerSample bits per sample, handling standard 16-bit")
-        }
-
-        val shortBuf = ByteBuffer.wrap(pcmData).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-        val shortArray = ShortArray(shortBuf.remaining())
-        shortBuf.get(shortArray)
-
-        return PcmData(sampleRate, channels, shortArray)
+        throw IllegalStateException("No data chunk found in WAV stream")
     }
 
-    /**
-     * Extracts track metadata using MediaMetadataRetriever.
-     */
-    fun extractMetadata(context: Context, uri: Uri?, file: File?, fallbackTitle: String): AudioTrackInfo {
+    fun extractMetadata(
+        context: Context,
+        uri: Uri? = null,
+        file: File? = null,
+        fallbackTitle: String = "Track"
+    ): AudioTrackInfo {
         val retriever = MediaMetadataRetriever()
-        var title = fallbackTitle
-        var durationMs = 0L
-        var sampleRate = 44100
-        var channels = 2
-        var format = "AUDIO"
-
         try {
             if (file != null) {
                 retriever.setDataSource(file.absolutePath)
-                format = file.extension.uppercase()
             } else if (uri != null) {
                 retriever.setDataSource(context, uri)
             }
 
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)?.let {
-                if (it.isNotBlank()) title = it
+            val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+                ?: file?.name?.substringBeforeLast(".")
+                ?: fallbackTitle
+            val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST) ?: "Artis Tidak Diketahui"
+            val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            val durationMs = durStr?.toLongOrNull() ?: 0L
+            val bitStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+            val bitrateKbps = (bitStr?.toIntOrNull() ?: 192000) / 1000
+
+            val mime = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE) ?: ""
+            val format = when {
+                mime.contains("mpeg") || (file?.name?.endsWith(".mp3", true) == true) -> AudioFormat.MP3
+                mime.contains("mp4") || (file?.name?.endsWith(".m4a", true) == true) -> AudioFormat.M4A
+                mime.contains("wav") || (file?.name?.endsWith(".wav", true) == true) -> AudioFormat.WAV
+                mime.contains("flac") || (file?.name?.endsWith(".flac", true) == true) -> AudioFormat.FLAC
+                else -> AudioFormat.MP3
             }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.let {
-                durationMs = it.toLongOrNull() ?: 0L
-            }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.let {
-                sampleRate = it.toIntOrNull() ?: 44100
-            }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_NUM_TRACKS)
+
+            val coverArt = retriever.embeddedPicture
+            val size = file?.length() ?: 0L
+
+            return AudioTrackInfo(
+                id = file?.absolutePath ?: uri.toString(),
+                title = title,
+                artist = artist,
+                durationMs = durationMs,
+                uri = uri,
+                file = file,
+                format = format,
+                sizeBytes = size,
+                bitrateKbps = bitrateKbps,
+                coverArtBytes = coverArt
+            )
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to retrieve full metadata: ${e.message}")
+            return AudioTrackInfo(
+                id = file?.absolutePath ?: (uri?.toString() ?: fallbackTitle),
+                title = fallbackTitle,
+                file = file,
+                uri = uri
+            )
         } finally {
             try {
                 retriever.release()
@@ -249,19 +257,5 @@ object AudioDecoder {
                 // ignore
             }
         }
-
-        val size = file?.length() ?: 0L
-
-        return AudioTrackInfo(
-            id = file?.absolutePath ?: uri.toString(),
-            title = title,
-            durationMs = durationMs,
-            format = format,
-            sizeBytes = size,
-            sampleRate = sampleRate,
-            channels = channels,
-            uri = uri,
-            file = file
-        )
     }
 }

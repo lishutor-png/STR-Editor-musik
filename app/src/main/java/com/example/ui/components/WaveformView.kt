@@ -3,8 +3,7 @@ package com.example.ui.components
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
@@ -22,6 +21,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 @Composable
 fun WaveformView(
@@ -36,209 +38,201 @@ fun WaveformView(
     onSeek: (positionMs: Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var draggingHandle by remember { mutableStateOf<String?>(null) } // "start", "end", or null
+    var draggingHandle by remember { mutableStateOf<String?>(null) }
 
     val primaryColor = MaterialTheme.colorScheme.primary
-    val surfaceColor = MaterialTheme.colorScheme.surfaceVariant
-    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
-    val playheadColor = MaterialTheme.colorScheme.tertiary
     val secondaryColor = MaterialTheme.colorScheme.secondary
-    val errorColor = MaterialTheme.colorScheme.error
+    val surfaceColor = MaterialTheme.colorScheme.surfaceVariant
+    val outlineColor = MaterialTheme.colorScheme.outline
+    val playheadColor = MaterialTheme.colorScheme.tertiary
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
-            .height(140.dp)
-            .testTag("waveform_canvas_container")
-            .pointerInput(waveform, durationMs, startMs, endMs) {
-                detectTapGestures { offset ->
-                    if (durationMs > 0) {
-                        val touchRatio = (offset.x / size.width).coerceIn(0f, 1f)
-                        val touchMs = (touchRatio * durationMs).toLong()
-                        onSeek(touchMs)
+            .height(130.dp)
+            .testTag("waveform_view")
+    ) {
+        val totalWidth = constraints.maxWidth.toFloat()
+        val totalHeight = constraints.maxHeight.toFloat()
+
+        Canvas(
+            modifier = Modifier
+                .matchParentSize()
+                .pointerInput(waveform, durationMs) {
+                    detectTapGestures { offset ->
+                        if (durationMs > 0 && totalWidth > 0) {
+                            val tappedMs = ((offset.x / totalWidth) * durationMs).toLong()
+                            onSeek(tappedMs.coerceIn(0L, durationMs))
+                        }
                     }
                 }
-            }
-            .pointerInput(waveform, durationMs, startMs, endMs) {
-                detectDragGestures(
-                    onDragStart = { offset ->
-                        if (durationMs <= 0) return@detectDragGestures
-                        val startX = (startMs.toFloat() / durationMs) * size.width
-                        val endX = (endMs.toFloat() / durationMs) * size.width
-                        val handleRadiusPx = 40.dp.toPx()
+                .pointerInput(waveform, durationMs, startMs, endMs) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            if (durationMs <= 0 || totalWidth <= 0) return@detectDragGestures
+                            val startX = (startMs.toFloat() / durationMs.toFloat()) * totalWidth
+                            val endX = (endMs.toFloat() / durationMs.toFloat()) * totalWidth
 
-                        draggingHandle = when {
-                            kotlin.math.abs(offset.x - startX) <= handleRadiusPx -> "start"
-                            kotlin.math.abs(offset.x - endX) <= handleRadiusPx -> "end"
-                            offset.x < startX -> "start"
-                            offset.x > endX -> "end"
-                            else -> {
-                                val distToStart = kotlin.math.abs(offset.x - startX)
-                                val distToEnd = kotlin.math.abs(offset.x - endX)
-                                if (distToStart < distToEnd) "start" else "end"
+                            val touchThreshold = 48.dp.toPx()
+                            val distStart = abs(offset.x - startX)
+                            val distEnd = abs(offset.x - endX)
+
+                            draggingHandle = when {
+                                distStart < touchThreshold && distStart <= distEnd -> "start"
+                                distEnd < touchThreshold -> "end"
+                                offset.x in startX..endX -> "middle"
+                                else -> "playhead"
+                            }
+                        },
+                        onDragEnd = {
+                            draggingHandle = null
+                        },
+                        onDragCancel = {
+                            draggingHandle = null
+                        },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            if (durationMs <= 0 || totalWidth <= 0) return@detectDragGestures
+
+                            val deltaMs = ((dragAmount.x / totalWidth) * durationMs).toLong()
+
+                            when (draggingHandle) {
+                                "start" -> {
+                                    val newStart = (startMs + deltaMs).coerceIn(0L, endMs - 500L)
+                                    onRangeChange(newStart, endMs)
+                                }
+                                "end" -> {
+                                    val newEnd = (endMs + deltaMs).coerceIn(startMs + 500L, durationMs)
+                                    onRangeChange(startMs, newEnd)
+                                }
+                                "middle" -> {
+                                    val length = endMs - startMs
+                                    var newStart = startMs + deltaMs
+                                    var newEnd = endMs + deltaMs
+                                    if (newStart < 0) {
+                                        newStart = 0
+                                        newEnd = length
+                                    } else if (newEnd > durationMs) {
+                                        newEnd = durationMs
+                                        newStart = durationMs - length
+                                    }
+                                    onRangeChange(newStart, newEnd)
+                                }
+                                "playhead" -> {
+                                    val newPos = ((change.position.x / totalWidth) * durationMs).toLong()
+                                    onSeek(newPos.coerceIn(0L, durationMs))
+                                }
                             }
                         }
-                    },
-                    onDrag = { change, _ ->
-                        change.consume()
-                        if (durationMs <= 0) return@detectDragGestures
-                        val touchRatio = (change.position.x / size.width).coerceIn(0f, 1f)
-                        val newTimeMs = (touchRatio * durationMs).toLong()
+                    )
+                }
+        ) {
+            val safeDuration = max(1L, durationMs)
+            val startX = (startMs.toFloat() / safeDuration.toFloat()) * size.width
+            val endX = (endMs.toFloat() / safeDuration.toFloat()) * size.width
+            val playheadX = (currentPlayheadMs.toFloat() / safeDuration.toFloat()) * size.width
 
-                        when (draggingHandle) {
-                            "start" -> {
-                                val safeStart = newTimeMs.coerceIn(0L, endMs - 100L)
-                                onRangeChange(safeStart, endMs)
-                            }
-                            "end" -> {
-                                val safeEnd = newTimeMs.coerceIn(startMs + 100L, durationMs)
-                                onRangeChange(startMs, safeEnd)
-                            }
-                        }
-                    },
-                    onDragEnd = {
-                        draggingHandle = null
-                    },
-                    onDragCancel = {
-                        draggingHandle = null
-                    }
-                )
-            }
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize().testTag("waveform_canvas")) {
-            val width = size.width
-            val height = size.height
-            val centerY = height / 2f
-            val bars = if (waveform.isNotEmpty()) waveform else FloatArray(100) { 0.1f }
-            val barCount = bars.size
-            val barSpacing = width / barCount
-            val barWidth = (barSpacing * 0.65f).coerceAtLeast(1.5f)
-
-            // Background canvas container
-            drawRoundRect(
-                color = surfaceColor,
-                size = size,
-                cornerRadius = CornerRadius(14.dp.toPx())
+            // 1. Dimmed unselected regions
+            drawRect(
+                color = Color.Black.copy(alpha = 0.45f),
+                topLeft = Offset(0f, 0f),
+                size = Size(startX, size.height)
+            )
+            drawRect(
+                color = Color.Black.copy(alpha = 0.45f),
+                topLeft = Offset(endX, 0f),
+                size = Size(size.width - endX, size.height)
             )
 
-            val safeDuration = if (durationMs > 0) durationMs else 1L
-            val startX = (startMs.toFloat() / safeDuration) * width
-            val endX = (endMs.toFloat() / safeDuration) * width
-            val playheadX = (currentPlayheadMs.toFloat() / safeDuration) * width
+            // 2. Waveform bars
+            if (waveform.isNotEmpty()) {
+                val barWidth = size.width / waveform.size.toFloat()
+                val gap = max(1f, barWidth * 0.25f)
+                val effectiveBarWidth = max(2f, barWidth - gap)
 
-            // 1. Draw Waveform Bars
-            for (i in 0 until barCount) {
-                val x = i * barSpacing + (barSpacing - barWidth) / 2f
-                val barProgress = i.toFloat() / barCount
-                val barTimeMs = (barProgress * safeDuration).toLong()
+                for (i in waveform.indices) {
+                    val x = i * barWidth
+                    val amp = waveform[i]
+                    val barHeight = max(6f, amp * size.height * 0.85f)
+                    val y = (size.height - barHeight) / 2f
 
-                val amp = bars[i]
-                val barHeight = (amp * (height * 0.76f)).coerceAtLeast(4.dp.toPx())
-                val top = centerY - barHeight / 2f
+                    val isInsideSelection = x in (startX - barWidth)..(endX + 2f)
+                    val barColor = if (isInsideSelection) {
+                        secondaryColor
+                    } else {
+                        surfaceColor.copy(alpha = 0.65f)
+                    }
 
-                val isSelected = barTimeMs in startMs..endMs
-                val color = if (isSelected) primaryColor else onSurfaceColor.copy(alpha = 0.22f)
-
-                drawRoundRect(
-                    color = color,
-                    topLeft = Offset(x, top),
-                    size = Size(barWidth, barHeight),
-                    cornerRadius = CornerRadius(2.dp.toPx())
-                )
+                    drawRoundRect(
+                        color = barColor,
+                        topLeft = Offset(x, y),
+                        size = Size(effectiveBarWidth, barHeight),
+                        cornerRadius = CornerRadius(effectiveBarWidth / 2f, effectiveBarWidth / 2f)
+                    )
+                }
             }
 
-            // 2. Draw Dim Overlay outside selection
-            if (startX > 0) {
-                drawRect(
-                    color = Color.Black.copy(alpha = 0.45f),
-                    topLeft = Offset(0f, 0f),
-                    size = Size(startX, height)
-                )
-            }
-            if (endX < width) {
-                drawRect(
-                    color = Color.Black.copy(alpha = 0.45f),
-                    topLeft = Offset(endX, 0f),
-                    size = Size(width - endX, height)
-                )
-            }
+            // 3. Selection border
+            drawRect(
+                color = primaryColor,
+                topLeft = Offset(startX, 0f),
+                size = Size(endX - startX, size.height),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+            )
 
-            // 3. Draw Fade-In Triangle if active
-            if (fadeInMs > 0 && endX > startX) {
-                val fadeInWidth = ((fadeInMs.toFloat() / safeDuration) * width).coerceAtMost(endX - startX)
-                val path = Path().apply {
-                    moveTo(startX, height)
-                    lineTo(startX + fadeInWidth, 0f)
+            // 4. Fade in curve
+            if (fadeInMs > 0) {
+                val fadeWidth = (fadeInMs.toFloat() / safeDuration.toFloat()) * size.width
+                val fadePath = Path().apply {
+                    moveTo(startX, size.height)
+                    lineTo(startX + fadeWidth, 0f)
                     lineTo(startX, 0f)
                     close()
                 }
-                drawPath(path, secondaryColor.copy(alpha = 0.25f))
+                drawPath(fadePath, color = Color.White.copy(alpha = 0.15f))
             }
 
-            // 4. Draw Fade-Out Triangle if active
-            if (fadeOutMs > 0 && endX > startX) {
-                val fadeOutWidth = ((fadeOutMs.toFloat() / safeDuration) * width).coerceAtMost(endX - startX)
-                val path = Path().apply {
-                    moveTo(endX - fadeOutWidth, 0f)
-                    lineTo(endX, height)
+            // 5. Fade out curve
+            if (fadeOutMs > 0) {
+                val fadeWidth = (fadeOutMs.toFloat() / safeDuration.toFloat()) * size.width
+                val fadePath = Path().apply {
+                    moveTo(endX, size.height)
+                    lineTo(endX - fadeWidth, 0f)
                     lineTo(endX, 0f)
                     close()
                 }
-                drawPath(path, errorColor.copy(alpha = 0.28f))
+                drawPath(fadePath, color = Color.White.copy(alpha = 0.15f))
             }
 
-            // 5. Draw Start Marker & Handle
-            drawLine(
-                color = primaryColor,
-                start = Offset(startX, 0f),
-                end = Offset(startX, height),
-                strokeWidth = 3.dp.toPx()
-            )
+            // 6. Start Handle (Left)
+            val handleWidth = 8.dp.toPx()
             drawRoundRect(
                 color = primaryColor,
-                topLeft = Offset(startX - 6.dp.toPx(), 0f),
-                size = Size(12.dp.toPx(), 24.dp.toPx()),
-                cornerRadius = CornerRadius(4.dp.toPx())
-            )
-            drawRoundRect(
-                color = primaryColor,
-                topLeft = Offset(startX - 6.dp.toPx(), height - 24.dp.toPx()),
-                size = Size(12.dp.toPx(), 24.dp.toPx()),
-                cornerRadius = CornerRadius(4.dp.toPx())
+                topLeft = Offset(startX - (handleWidth / 2f), 0f),
+                size = Size(handleWidth, size.height),
+                cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
             )
 
-            // 6. Draw End Marker & Handle
-            drawLine(
-                color = primaryColor,
-                start = Offset(endX, 0f),
-                end = Offset(endX, height),
-                strokeWidth = 3.dp.toPx()
-            )
+            // 7. End Handle (Right)
             drawRoundRect(
                 color = primaryColor,
-                topLeft = Offset(endX - 6.dp.toPx(), 0f),
-                size = Size(12.dp.toPx(), 24.dp.toPx()),
-                cornerRadius = CornerRadius(4.dp.toPx())
-            )
-            drawRoundRect(
-                color = primaryColor,
-                topLeft = Offset(endX - 6.dp.toPx(), height - 24.dp.toPx()),
-                size = Size(12.dp.toPx(), 24.dp.toPx()),
-                cornerRadius = CornerRadius(4.dp.toPx())
+                topLeft = Offset(endX - (handleWidth / 2f), 0f),
+                size = Size(handleWidth, size.height),
+                cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
             )
 
-            // 7. Draw Playhead (current playing position)
-            if (playheadX in 0f..width) {
+            // 8. Playhead cursor
+            if (currentPlayheadMs in 0..safeDuration) {
                 drawLine(
                     color = playheadColor,
                     start = Offset(playheadX, 0f),
-                    end = Offset(playheadX, height),
-                    strokeWidth = 2.5.dp.toPx()
+                    end = Offset(playheadX, size.height),
+                    strokeWidth = 3.dp.toPx()
                 )
                 drawCircle(
                     color = playheadColor,
-                    radius = 5.dp.toPx(),
-                    center = Offset(playheadX, 10.dp.toPx())
+                    radius = 6.dp.toPx(),
+                    center = Offset(playheadX, 6.dp.toPx())
                 )
             }
         }

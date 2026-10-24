@@ -1,6 +1,7 @@
 package com.example.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -9,56 +10,56 @@ import androidx.compose.ui.graphics.Color
 
 private val DarkColorScheme = darkColorScheme(
     primary = SageGreen,
-    onPrimary = Color(0xFF0F261B),
+    onPrimary = Color(0xFF0F1E16),
     primaryContainer = SageGreenContainerDark,
     onPrimaryContainer = SageGreenLight,
     secondary = AccentEmerald,
-    onSecondary = Color(0xFF06332E),
-    secondaryContainer = Color(0xFF1B403B),
-    onSecondaryContainer = Color(0xFFA7F3D0),
+    onSecondary = Color(0xFF003822),
+    secondaryContainer = Color(0xFF005234),
+    onSecondaryContainer = Color(0xFF8CF5B0),
     tertiary = AccentAmber,
-    onTertiary = Color(0xFF381F04),
-    tertiaryContainer = Color(0xFF4D3215),
-    onTertiaryContainer = Color(0xFFFDE68A),
-    error = AccentRose,
-    onError = Color(0xFF380808),
-    errorContainer = Color(0xFF521C1C),
-    onErrorContainer = Color(0xFFFCD8D8),
+    onTertiary = Color(0xFF452B00),
+    tertiaryContainer = Color(0xFF633F00),
+    onTertiaryContainer = Color(0xFFFFDDB3),
     background = DarkBackground,
     onBackground = DarkTextPrimary,
     surface = DarkSurface,
     onSurface = DarkTextPrimary,
     surfaceVariant = DarkCard,
     onSurfaceVariant = DarkTextSecondary,
-    outline = Color(0xFF33404B),
-    outlineVariant = Color(0xFF253038)
+    error = AccentRose,
+    onError = Color(0xFF60001B),
+    errorContainer = Color(0xFF8C002B),
+    onErrorContainer = Color(0xFFFFD9DF),
+    outline = Color(0xFF3E4D44),
+    outlineVariant = Color(0xFF2B362F)
 )
 
 private val LightColorScheme = lightColorScheme(
     primary = SageGreenDark,
-    onPrimary = Color(0xFFFFFFFF),
+    onPrimary = Color.White,
     primaryContainer = SageGreenContainerLight,
-    onPrimaryContainer = Color(0xFF133624),
-    secondary = Color(0xFF2E8B80),
-    onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = Color(0xFFE0F4F1),
-    onSecondaryContainer = Color(0xFF0F4039),
-    tertiary = Color(0xFFB5702A),
-    onTertiary = Color(0xFFFFFFFF),
-    tertiaryContainer = Color(0xFFFBEBD8),
-    onTertiaryContainer = Color(0xFF593006),
-    error = Color(0xFFC94A4A),
-    onError = Color(0xFFFFFFFF),
-    errorContainer = Color(0xFFFCE8E8),
-    onErrorContainer = Color(0xFF6B1818),
+    onPrimaryContainer = Color(0xFF132F22),
+    secondary = Color(0xFF0F8A5A),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFB5F2D1),
+    onSecondaryContainer = Color(0xFF002113),
+    tertiary = Color(0xFFB45309),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFFFECC8),
+    onTertiaryContainer = Color(0xFF2E1500),
     background = LightBackground,
     onBackground = LightTextPrimary,
     surface = LightSurface,
     onSurface = LightTextPrimary,
     surfaceVariant = LightCard,
     onSurfaceVariant = LightTextSecondary,
-    outline = Color(0xFFC3CFC9),
-    outlineVariant = Color(0xFFDDE6E1)
+    error = Color(0xFFDC2626),
+    onError = Color.White,
+    errorContainer = Color(0xFFFFDAD6),
+    onErrorContainer = Color(0xFF410002),
+    outline = Color(0xFFB4C4BA),
+    outlineVariant = Color(0xFFD6E2DB)
 )
 
 @Composable
@@ -66,7 +67,8 @@ fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val colorScheme: ColorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,

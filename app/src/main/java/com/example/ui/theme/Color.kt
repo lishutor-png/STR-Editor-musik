@@ -2,44 +2,30 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Soft Sage & Studio Mint Palette (Matte, non-glare, eye-safe for prolonged audio editing)
-val SageGreen = Color(0xFF5EAA80)
-val SageGreenLight = Color(0xFF88C9A3)
-val SageGreenDark = Color(0xFF327453)
-val SageGreenDeep = Color(0xFF1F382B)
-val SageGreenContainerLight = Color(0xFFE3EFE8)
-val SageGreenContainerDark = Color(0xFF22382D)
+val SageGreen = Color(0xFF6B8E7D)
+val SageGreenLight = Color(0xFF98B8A6)
+val SageGreenDark = Color(0xFF426554)
+val SageGreenContainerDark = Color(0xFF26382F)
+val SageGreenContainerLight = Color(0xFFD2E3D9)
 
-// Backward compatible aliases for any remaining references
-val LimeGreen = SageGreen
-val LimeGreenBright = SageGreen
-val LimeGreenLight = SageGreenLight
-val LimeGreenDark = SageGreenDark
-val LimeGreenDeep = SageGreenDeep
+val AccentEmerald = Color(0xFF10B981)
+val AccentAmber = Color(0xFFF59E0B)
+val AccentRose = Color(0xFFF43F5E)
 
-// Supporting Muted Accents (Soothing and balanced)
-val AccentEmerald = Color(0xFF4DB6AC)   // Soft seafoam / mint
-val AccentAmber = Color(0xFFDFA15A)     // Soft warm amber / peach
-val AccentCyan = Color(0xFF5CA3CC)      // Soft calm steel blue
-val AccentRose = Color(0xFFE06D6D)      // Soft muted coral rose (non-piercing)
+val DarkBackground = Color(0xFF121413)
+val DarkSurface = Color(0xFF191D1A)
+val DarkCard = Color(0xFF202622)
+val DarkCardElevated = Color(0xFF28302B)
+val DarkTextPrimary = Color(0xFFF1F5F2)
+val DarkTextSecondary = Color(0xFFB4C2BA)
+val DarkTextMuted = Color(0xFF75857C)
+val DarkWaveformUnselected = Color(0xFF38433C)
 
-// Dark Theme Surfaces & Text (Studio Charcoal & Soft Slate - Eliminates eye strain)
-val DarkBackground = Color(0xFF14181B)
-val DarkSurface = Color(0xFF1B2227)
-val DarkCard = Color(0xFF232B32)
-val DarkCardElevated = Color(0xFF2B363F)
-val DarkTextPrimary = Color(0xFFE8ECE9)
-val DarkTextSecondary = Color(0xFF96A59D)
-val DarkTextMuted = Color(0xFF65756C)
-val DarkWaveformUnselected = Color(0xFF333F48)
-
-// Light Theme Surfaces & Text (Soft Warm Mist & Forest Slate - Zero monitor glare)
-val LightBackground = Color(0xFFF4F6F5)
+val LightBackground = Color(0xFFF6F8F6)
 val LightSurface = Color(0xFFFFFFFF)
-val LightCard = Color(0xFFEBF0ED)
-val LightCardElevated = Color(0xFFDFE6E2)
-val LightTextPrimary = Color(0xFF1B2620)
-val LightTextSecondary = Color(0xFF4C5E55)
-val LightTextMuted = Color(0xFF74857C)
-val LightWaveformUnselected = Color(0xFFCBD6D0)
-
+val LightCard = Color(0xFFEBF1EC)
+val LightCardElevated = Color(0xFFDFE8E1)
+val LightTextPrimary = Color(0xFF18221C)
+val LightTextSecondary = Color(0xFF48584F)
+val LightTextMuted = Color(0xFF788A80)
+val LightWaveformUnselected = Color(0xFFCCD8D0)

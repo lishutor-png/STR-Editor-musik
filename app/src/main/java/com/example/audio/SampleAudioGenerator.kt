@@ -6,77 +6,49 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.exp
-import kotlin.math.max
 import kotlin.math.sin
 
 object SampleAudioGenerator {
 
     fun deleteSampleTracks(context: Context) {
         try {
-            val sampleDir = File(context.cacheDir, "sample_audio")
-            if (sampleDir.exists()) {
-                sampleDir.deleteRecursively()
+            val dir = File(context.cacheDir, "sample_audio")
+            if (dir.exists()) {
+                dir.deleteRecursively()
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            // ignore
+        }
     }
 
     suspend fun getOrCreateSampleTracks(context: Context): List<AudioTrackInfo> = withContext(Dispatchers.IO) {
-        val sampleDir = File(context.cacheDir, "sample_audio")
-        if (!sampleDir.exists()) sampleDir.mkdirs()
-
-        val track1File = File(sampleDir, "synthwave_groove.wav")
-        val track2File = File(sampleDir, "acoustic_piano.wav")
-        val track3File = File(sampleDir, "lofi_ambient_beat.wav")
-
-        if (!track1File.exists()) {
-            val pcm1 = generateSynthwave(durationSec = 16)
-            AudioEncoder.encodeWav(pcm1, track1File)
+        val dir = File(context.cacheDir, "sample_audio")
+        if (!dir.exists()) {
+            dir.mkdirs()
         }
 
-        if (!track2File.exists()) {
-            val pcm2 = generateAcousticPiano(durationSec = 16)
-            AudioEncoder.encodeWav(pcm2, track2File)
+        val track1 = File(dir, "Sunset_Synthwave_Demo.wav")
+        if (!track1.exists()) {
+            val pcm1 = generateSynthwave()
+            AudioEncoder.encodeWav(pcm1, track1)
         }
 
-        if (!track3File.exists()) {
-            val pcm3 = generateLofiBeat(durationSec = 16)
-            AudioEncoder.encodeWav(pcm3, track3File)
+        val track2 = File(dir, "Acoustic_Piano_Demo.wav")
+        if (!track2.exists()) {
+            val pcm2 = generateAcousticPiano()
+            AudioEncoder.encodeWav(pcm2, track2)
+        }
+
+        val track3 = File(dir, "Lofi_Beat_Master.wav")
+        if (!track3.exists()) {
+            val pcm3 = generateLofiBeat()
+            AudioEncoder.encodeWav(pcm3, track3)
         }
 
         listOf(
-            AudioTrackInfo(
-                id = track1File.absolutePath,
-                title = "Synthwave Groove",
-                durationMs = 16000L,
-                format = "WAV",
-                sizeBytes = track1File.length(),
-                sampleRate = 44100,
-                channels = 2,
-                file = track1File,
-                isSample = true
-            ),
-            AudioTrackInfo(
-                id = track2File.absolutePath,
-                title = "Acoustic Piano Melody",
-                durationMs = 16000L,
-                format = "WAV",
-                sizeBytes = track2File.length(),
-                sampleRate = 44100,
-                channels = 2,
-                file = track2File,
-                isSample = true
-            ),
-            AudioTrackInfo(
-                id = track3File.absolutePath,
-                title = "Lo-Fi Ambient Beat",
-                durationMs = 16000L,
-                format = "WAV",
-                sizeBytes = track3File.length(),
-                sampleRate = 44100,
-                channels = 2,
-                file = track3File,
-                isSample = true
-            )
+            AudioDecoder.extractMetadata(context, file = track1, fallbackTitle = "Sunset Synthwave Demo"),
+            AudioDecoder.extractMetadata(context, file = track2, fallbackTitle = "Acoustic Piano Demo"),
+            AudioDecoder.extractMetadata(context, file = track3, fallbackTitle = "Lofi Beat Master")
         )
     }
 
@@ -88,142 +60,115 @@ object SampleAudioGenerator {
         val beatDurationSec = 60.0 / bpm
         val sixteenthSec = beatDurationSec / 4.0
 
-        // Chord progression: Am, F, C, G
         val notes = doubleArrayOf(
-            220.0, 261.63, 329.63, 440.0, // Am
-            174.61, 220.0, 261.63, 349.23, // F
-            130.81, 164.81, 196.0, 261.63, // C
-            196.0, 246.94, 293.66, 392.0   // G
+            220.0, 261.63, 329.63, 440.0,
+            174.61, 220.0, 261.63, 349.23,
+            130.81, 164.81, 196.0, 261.63,
+            196.0, 246.94, 293.66, 392.0
         )
 
-        for (frame in 0 until totalFrames) {
-            val t = frame.toDouble() / sampleRate
-            val currentBeat = t / beatDurationSec
-            val chordIdx = ((currentBeat / 4).toInt() % 4) * 4
-            val sixteenthIdx = (t / sixteenthSec).toInt() % 4
-            val currentFreq = notes[chordIdx + sixteenthIdx]
+        for (f in 0 until totalFrames) {
+            val t = f.toDouble() / sampleRate.toDouble()
+            val sixteenthIdx = (t / sixteenthSec).toInt()
+            val noteFreq = notes[sixteenthIdx % notes.size]
 
-            // Arpeggio synth (saw-like harmonics)
-            val noteTime = t % sixteenthSec
-            val envelope = exp(-noteTime * 6.0)
-            val synth = (sin(2 * PI * currentFreq * t) + 0.5 * sin(4 * PI * currentFreq * t)) * envelope
+            // Synth lead (sawtooth-like via harmonics)
+            val osc1 = sin(2.0 * PI * noteFreq * t) * 0.4
+            val osc2 = sin(2.0 * PI * (noteFreq * 2.0) * t) * 0.2
+            val osc3 = sin(2.0 * PI * (noteFreq * 0.5) * t) * 0.3
 
-            // Bassline
-            val bassFreq = notes[chordIdx] / 2.0
-            val bassEnv = exp(-(t % (beatDurationSec / 2.0)) * 4.0)
-            val bass = sin(2 * PI * bassFreq * t) * bassEnv * 0.8
+            // Bassline (sub 55Hz - 110Hz)
+            val bassFreq = noteFreq / 2.0
+            val bass = sin(2.0 * PI * bassFreq * t) * 0.4
 
-            // Kick on each beat
-            val kickTime = t % beatDurationSec
-            val kickFreq = 120.0 * exp(-kickTime * 25.0) + 40.0
-            val kick = sin(2 * PI * kickFreq * kickTime) * exp(-kickTime * 12.0) * 0.9
-
-            // Snare on beats 2 and 4
-            val snareTime = (t - beatDurationSec) % (beatDurationSec * 2.0)
-            val snare = if (snareTime in 0.0..0.25) {
-                val noise = (Math.random() * 2.0 - 1.0)
-                noise * exp(-snareTime * 18.0) * 0.6
+            // Kick drum on beats (t % beatDurationSec)
+            val beatPhase = (t % beatDurationSec) / beatDurationSec
+            val kick = if (beatPhase < 0.15) {
+                sin(2.0 * PI * (120.0 - beatPhase * 400.0) * beatPhase) * exp(-beatPhase * 25.0) * 0.7
             } else 0.0
 
-            val left = (synth * 0.45 + bass * 0.35 + kick * 0.4 + snare * 0.35).coerceIn(-1.0, 1.0)
-            val right = (synth * 0.5 + bass * 0.35 + kick * 0.4 + snare * 0.35).coerceIn(-1.0, 1.0)
+            // Hihat on offbeats
+            val hihatPhase = ((t + beatDurationSec / 2.0) % beatDurationSec) / beatDurationSec
+            val hihat = if (hihatPhase < 0.05) {
+                (Math.random() * 2.0 - 1.0) * exp(-hihatPhase * 80.0) * 0.2
+            } else 0.0
 
-            samples[frame * 2] = (left * 28000).toInt().toShort()
-            samples[frame * 2 + 1] = (right * 28000).toInt().toShort()
+            val left = (osc1 + osc2 + bass * 0.7 + kick + hihat * 0.6).coerceIn(-1.0, 1.0)
+            val right = (osc1 + osc3 + bass * 0.7 + kick + hihat * 0.8).coerceIn(-1.0, 1.0)
+
+            samples[f * 2] = (left * 28000.0).toInt().toShort()
+            samples[f * 2 + 1] = (right * 28000.0).toInt().toShort()
         }
 
         return PcmData(sampleRate, 2, samples)
     }
 
-    private fun generateAcousticPiano(durationSec: Int = 16, sampleRate: Int = 44100): PcmData {
+    private fun generateAcousticPiano(durationSec: Int = 14, sampleRate: Int = 44100): PcmData {
         val totalFrames = durationSec * sampleRate
         val samples = ShortArray(totalFrames * 2)
 
-        val chordDur = 4.0 // 4 seconds per chord
-        // Cmaj7, Am7, Fmaj7, G7
-        val chordFreqs = listOf(
-            listOf(261.63, 329.63, 392.0, 493.88),
-            listOf(220.0, 261.63, 329.63, 392.0),
-            listOf(174.61, 220.0, 261.63, 329.63),
-            listOf(196.0, 246.94, 293.66, 349.23)
+        val chords = listOf(
+            doubleArrayOf(261.63, 329.63, 392.0, 523.25), // C maj
+            doubleArrayOf(220.0, 261.63, 329.63, 440.0),  // Am
+            doubleArrayOf(174.61, 220.0, 261.63, 349.23), // F maj
+            doubleArrayOf(196.0, 246.94, 293.66, 392.0)   // G maj
         )
 
-        for (frame in 0 until totalFrames) {
-            val t = frame.toDouble() / sampleRate
-            val chordIndex = ((t / chordDur).toInt()) % chordFreqs.size
-            val freqs = chordFreqs[chordIndex]
+        val chordDur = 3.5
+
+        for (f in 0 until totalFrames) {
+            val t = f.toDouble() / sampleRate.toDouble()
+            val chordIdx = (t / chordDur).toInt() % chords.size
+            val chord = chords[chordIdx]
             val chordTime = t % chordDur
 
-            var soundL = 0.0
-            var soundR = 0.0
-
-            freqs.forEachIndexed { idx, f ->
-                val arpegTime = max(0.0, chordTime - idx * 0.35)
-                val decay = exp(-arpegTime * 1.5)
-                // Piano harmonic series
-                val harmonic1 = sin(2 * PI * f * arpegTime)
-                val harmonic2 = 0.4 * sin(4 * PI * f * arpegTime)
-                val harmonic3 = 0.15 * sin(6 * PI * f * arpegTime)
-                val noteVal = (harmonic1 + harmonic2 + harmonic3) * decay * 0.3
-
-                // Stereo spread
-                val panL = 1.0 - (idx * 0.2)
-                val panR = 0.4 + (idx * 0.2)
-                soundL += noteVal * panL
-                soundR += noteVal * panR
+            var sum = 0.0
+            for (freq in chord) {
+                val decay = exp(-chordTime * 1.8)
+                sum += (sin(2.0 * PI * freq * t) + 0.3 * sin(2.0 * PI * freq * 2.0 * t)) * decay * 0.2
             }
 
-            samples[frame * 2] = (soundL.coerceIn(-1.0, 1.0) * 26000).toInt().toShort()
-            samples[frame * 2 + 1] = (soundR.coerceIn(-1.0, 1.0) * 26000).toInt().toShort()
+            val clamped = sum.coerceIn(-1.0, 1.0)
+            samples[f * 2] = (clamped * 26000.0).toInt().toShort()
+            samples[f * 2 + 1] = (clamped * 26000.0).toInt().toShort()
         }
 
         return PcmData(sampleRate, 2, samples)
     }
 
-    private fun generateLofiBeat(durationSec: Int = 16, sampleRate: Int = 44100): PcmData {
+    private fun generateLofiBeat(durationSec: Int = 18, sampleRate: Int = 44100): PcmData {
         val totalFrames = durationSec * sampleRate
         val samples = ShortArray(totalFrames * 2)
 
-        val bpm = 80.0
+        val bpm = 85.0
         val beatSec = 60.0 / bpm
 
-        // Jazzy chords (Dm9, G13, Cmaj9, A7b13)
-        val chords = listOf(
-            listOf(146.83, 220.0, 261.63, 329.63, 392.0),
-            listOf(98.0, 196.0, 246.94, 329.63, 349.23),
-            listOf(130.81, 196.0, 246.94, 293.66, 329.63),
-            listOf(110.0, 220.0, 277.18, 329.63, 415.30)
-        )
+        val eMinorFrequencies = doubleArrayOf(164.81, 196.0, 246.94, 329.63)
 
-        for (frame in 0 until totalFrames) {
-            val t = frame.toDouble() / sampleRate
-            val chordIndex = ((t / (beatSec * 4)).toInt()) % chords.size
-            val freqs = chords[chordIndex]
-            val chordT = t % (beatSec * 4)
+        for (f in 0 until totalFrames) {
+            val t = f.toDouble() / sampleRate.toDouble()
+            val beatPhase = (t % beatSec) / beatSec
 
-            // Warm Rhodes piano tone with gentle tremolo
-            val tremolo = 1.0 + 0.15 * sin(2 * PI * 4.5 * t)
-            var rhodes = 0.0
-            freqs.forEach { f ->
-                val decay = exp(-chordT * 0.8)
-                rhodes += (sin(2 * PI * f * t) + 0.25 * sin(4 * PI * f * t)) * decay * 0.22
+            // Warm Rhodes piano tone
+            var epiano = 0.0
+            for (freq in eMinorFrequencies) {
+                val decay = exp(-beatPhase * 2.0)
+                epiano += sin(2.0 * PI * freq * t) * decay * 0.15
             }
-            rhodes *= tremolo
 
-            // Vinyl dust / crackle texture
-            val crackle = (Math.random() * 2.0 - 1.0) * 0.015
+            // Snare / rimshot on beat 2 & 4
+            val beatNumber = (t / beatSec).toInt() % 4
+            val isSnareBeat = beatNumber == 1 || beatNumber == 3
+            val snare = if (isSnareBeat && beatPhase < 0.1) {
+                (Math.random() * 2.0 - 1.0) * exp(-beatPhase * 35.0) * 0.35
+            } else 0.0
 
-            // Muffled Lo-fi Kick
-            val kickT = t % beatSec
-            val kick = if (kickT < 0.2) sin(2 * PI * (65.0 * exp(-kickT * 15.0)) * kickT) * exp(-kickT * 10.0) * 0.55 else 0.0
+            // Vinyl noise
+            val vinyl = (Math.random() * 2.0 - 1.0) * 0.015
 
-            // Lo-fi Rimshot Snare on 2nd and 4th beat
-            val snareT = (t - beatSec) % (beatSec * 2.0)
-            val snare = if (snareT in 0.0..0.12) ((Math.random() * 2.0 - 1.0) * 0.3 + sin(2 * PI * 180.0 * snareT) * 0.25) * exp(-snareT * 22.0) else 0.0
-
-            val mix = (rhodes + kick + snare + crackle).coerceIn(-1.0, 1.0)
-            samples[frame * 2] = (mix * 26000).toInt().toShort()
-            samples[frame * 2 + 1] = (mix * 26000).toInt().toShort()
+            val out = (epiano + snare + vinyl).coerceIn(-1.0, 1.0)
+            samples[f * 2] = (out * 24000.0).toInt().toShort()
+            samples[f * 2 + 1] = (out * 24000.0).toInt().toShort()
         }
 
         return PcmData(sampleRate, 2, samples)

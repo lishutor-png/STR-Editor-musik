@@ -3,6 +3,7 @@ package com.example.ui.components
 import java.util.Locale
 
 object TimeFormatUtils {
+
     fun formatMs(ms: Long): String {
         val totalSeconds = ms / 1000
         val minutes = totalSeconds / 60

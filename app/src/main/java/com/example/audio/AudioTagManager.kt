@@ -8,9 +8,9 @@ import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
-import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
@@ -20,16 +20,19 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.InputStream
 import java.io.RandomAccessFile
+import java.nio.charset.StandardCharsets
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.random.Random
 
 object AudioTagManager {
     private const val TAG = "AudioTagManager"
 
     enum class CoverFitMode {
-        FILL,   // Potong tengah 1:1 agar memenuhi bingkai tanpa sisa tepi
-        FIT,    // Muat pas seluruh foto ke dalam bingkai 1:1 dengan latar belakang elegan
-        CUSTOM  // Pengaturan bebas dengan zoom, geser (pan), dan putar
+        FILL,
+        FIT,
+        CUSTOM
     }
 
     data class PresetCoverInfo(
@@ -40,17 +43,17 @@ object AudioTagManager {
     )
 
     val PRESET_COVERS = listOf(
-        PresetCoverInfo(0, "Sunset Melodi", "Gradien Hangat & Piringan Hitam", 0xFFFF5722),
+        PresetCoverInfo(0, "Sunset Melodi", "Gradien Hangat & Piringan Hitam", 0xFFFF6F00),
         PresetCoverInfo(1, "Neon Cyber", "Gelombang Vokal & Spektrum Ungu", 0xFF7C4DFF),
-        PresetCoverInfo(2, "Akustik Alami", "Nuansa Hijau Botani & Akustik", 0xFF009688),
-        PresetCoverInfo(3, "Golden Studio", "Kemewahan Hitam & Emas Studio", 0xFFFFB300)
+        PresetCoverInfo(2, "Akustik Alami", "Nuansa Hijau Botani & Akustik", 0xFF00796B),
+        PresetCoverInfo(3, "Golden Studio", "Kemewahan Hitam & Emas Studio", 0xFFFFD700)
     )
 
-    /**
-     * Extracts rich metadata including embedded cover art from an audio file or URI.
-     */
-    suspend fun readMetadata(context: Context, uri: Uri?, file: File?): SongMetadata = withContext(Dispatchers.IO) {
-        val retriever = MediaMetadataRetriever()
+    suspend fun readMetadata(
+        context: Context,
+        uri: Uri? = null,
+        file: File? = null
+    ): SongMetadata = withContext(Dispatchers.IO) {
         var title = ""
         var artist = ""
         var album = ""
@@ -60,86 +63,104 @@ object AudioTagManager {
         var trackNumber = ""
         var composer = ""
         var comment = ""
+        var coverBytes: ByteArray? = null
+        var coverMime = "image/jpeg"
         var durationMs = 0L
         var bitrate = 0
         var sampleRate = 44100
-        var coverBytes: ByteArray? = null
-        var coverMime = "image/jpeg"
         var format = "MP3"
-        var originalFileName = ""
+        val fileName = file?.name ?: uri?.lastPathSegment ?: "Unknown"
 
+        // 1. First try native ID3v2 extraction from File if MP3
+        if (file != null && file.exists() && isMp3File(file)) {
+            try {
+                val parsed = extractId3v2Tags(file)
+                if (parsed != null) {
+                    if (parsed.title.isNotBlank()) title = parsed.title
+                    if (parsed.artist.isNotBlank()) artist = parsed.artist
+                    if (parsed.album.isNotBlank()) album = parsed.album
+                    if (parsed.albumArtist.isNotBlank()) albumArtist = parsed.albumArtist
+                    if (parsed.genre.isNotBlank()) genre = parsed.genre
+                    if (parsed.year.isNotBlank()) year = parsed.year
+                    if (parsed.trackNumber.isNotBlank()) trackNumber = parsed.trackNumber
+                    if (parsed.composer.isNotBlank()) composer = parsed.composer
+                    if (parsed.comment.isNotBlank()) comment = parsed.comment
+                    if (parsed.coverArtBytes != null && parsed.coverArtBytes.isNotEmpty()) {
+                        coverBytes = parsed.coverArtBytes
+                        coverMime = parsed.coverMimeType
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error in manual ID3v2 extraction: ${e.message}")
+            }
+        }
+
+        // 2. Read standard metadata & fallback via MediaMetadataRetriever
+        val retriever = MediaMetadataRetriever()
         try {
-            if (file != null) {
+            if (file != null && file.exists()) {
                 retriever.setDataSource(file.absolutePath)
-                format = file.extension.uppercase()
-                originalFileName = file.name
-                title = file.nameWithoutExtension
             } else if (uri != null) {
                 retriever.setDataSource(context, uri)
-                originalFileName = uri.lastPathSegment?.substringAfterLast('/') ?: "audio_track"
-                title = originalFileName.substringBeforeLast('.')
-                val ext = originalFileName.substringAfterLast('.', "")
-                if (ext.isNotBlank()) format = ext.uppercase()
             }
 
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)?.let {
-                if (it.isNotBlank()) title = it.trim()
+            if (title.isBlank()) {
+                title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+                    ?: fileName.substringBeforeLast(".")
             }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.let {
-                if (it.isNotBlank()) artist = it.trim()
+            if (artist.isBlank()) {
+                artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                    ?: "Artis Tidak Diketahui"
             }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)?.let {
-                if (it.isNotBlank()) album = it.trim()
+            if (album.isBlank()) {
+                album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM) ?: ""
             }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)?.let {
-                if (it.isNotBlank()) albumArtist = it.trim()
+            if (albumArtist.isBlank()) {
+                albumArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST) ?: ""
             }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)?.let {
-                if (it.isNotBlank()) genre = it.trim()
+            if (genre.isBlank()) {
+                genre = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE) ?: ""
             }
-            val rawYear = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR)
-                ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)
-            rawYear?.let {
-                val yearMatch = Regex("""\b(19\d\d|20\d\d)\b""").find(it)
-                year = yearMatch?.value ?: it.take(4)
+            if (year.isBlank()) {
+                year = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR)
+                    ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE) ?: ""
             }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)?.let {
-                trackNumber = it.substringBefore('/')
-            }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER)?.let {
-                composer = it.trim()
-            }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.let {
-                durationMs = it.toLongOrNull() ?: 0L
-            }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.let {
-                bitrate = (it.toIntOrNull() ?: 0) / 1000
-            }
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.let {
-                sampleRate = it.toIntOrNull() ?: 44100
+            if (composer.isBlank()) {
+                composer = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER) ?: ""
             }
 
-            val picture = retriever.embeddedPicture
-            if (picture != null && picture.isNotEmpty()) {
-                coverBytes = picture
-                coverMime = detectMimeType(picture)
+            val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            if (durStr != null) {
+                durationMs = durStr.toLongOrNull() ?: 0L
+            }
+            val bitStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+            if (bitStr != null) {
+                bitrate = (bitStr.toIntOrNull() ?: 0) / 1000
+            }
+            val mime = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE) ?: ""
+            format = when {
+                mime.contains("mpeg", ignoreCase = true) || fileName.endsWith(".mp3", true) -> "MP3"
+                mime.contains("mp4", ignoreCase = true) || fileName.endsWith(".m4a", true) -> "M4A"
+                mime.contains("wav", ignoreCase = true) || fileName.endsWith(".wav", true) -> "WAV"
+                mime.contains("flac", ignoreCase = true) || fileName.endsWith(".flac", true) -> "FLAC"
+                else -> "MP3"
+            }
+
+            // Fallback cover art from retriever if not already extracted
+            if (coverBytes == null || coverBytes.isEmpty()) {
+                val pic = retriever.embeddedPicture
+                if (pic != null && pic.isNotEmpty()) {
+                    coverBytes = pic
+                    coverMime = detectMimeType(pic)
+                }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error extracting metadata: ${e.message}")
+            Log.w(TAG, "MediaMetadataRetriever error: ${e.message}")
         } finally {
             try {
                 retriever.release()
             } catch (e: Exception) {
                 // ignore
-            }
-        }
-
-        // Direct ID3v2 APIC fallback if MediaMetadataRetriever didn't return cover
-        if (coverBytes == null && file != null && file.exists()) {
-            val fallbackPic = extractId3v2Picture(file)
-            if (fallbackPic != null && fallbackPic.isNotEmpty()) {
-                coverBytes = fallbackPic
-                coverMime = detectMimeType(fallbackPic)
             }
         }
 
@@ -159,507 +180,91 @@ object AudioTagManager {
             bitrateKbps = bitrate,
             sampleRate = sampleRate,
             format = format,
-            originalFileName = originalFileName,
+            originalFileName = fileName,
             originalFilePath = file?.absolutePath,
             originalUri = uri
         )
     }
 
-    private fun detectMimeType(bytes: ByteArray): String {
-        return if (bytes.size >= 8 &&
-            bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() &&
-            bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()
-        ) {
-            "image/png"
-        } else if (bytes.size >= 3 &&
-            bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()
-        ) {
-            "image/jpeg"
-        } else if (bytes.size >= 4 &&
-            bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
-            bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte()
-        ) {
-            "image/webp"
-        } else {
-            "image/jpeg"
-        }
-    }
-
-    /**
-     * Memory-safe bitmap loading from content URI.
-     * Uses two-pass stream decoding with inSampleSize and handles EXIF rotation.
-     */
-    suspend fun loadBitmapFromUri(context: Context, uri: Uri, maxDimension: Int = 1200): Bitmap? = withContext(Dispatchers.IO) {
-        try {
-            // Check EXIF rotation first
-            val exifRotation = try {
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    val exif = ExifInterface(input)
-                    when (exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
-                        ExifInterface.ORIENTATION_ROTATE_90 -> 90
-                        ExifInterface.ORIENTATION_ROTATE_180 -> 180
-                        ExifInterface.ORIENTATION_ROTATE_270 -> 270
-                        else -> 0
-                    }
-                } ?: 0
-            } catch (t: Throwable) {
-                0
-            }
-
-            // Pass 1: Decode image bounds without loading pixels
-            val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                BitmapFactory.decodeStream(input, null, boundsOptions)
-            }
-            if (boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) return@withContext null
-
-            // Calculate sample size
-            var sampleSize = 1
-            val maxSide = maxOf(boundsOptions.outWidth, boundsOptions.outHeight)
-            while (maxSide / (sampleSize * 2) >= maxDimension) {
-                sampleSize *= 2
-            }
-
-            // Pass 2: Decode sampled bitmap
-            val decodeOptions = BitmapFactory.Options().apply {
-                inSampleSize = sampleSize
-                inPreferredConfig = Bitmap.Config.ARGB_8888
-            }
-            val sampledBitmap = context.contentResolver.openInputStream(uri)?.use { input ->
-                BitmapFactory.decodeStream(input, null, decodeOptions)
-            } ?: return@withContext null
-
-            // Pass 3: Apply EXIF rotation if needed
-            val rotatedBitmap = if (exifRotation != 0) {
-                val matrix = Matrix().apply { postRotate(exifRotation.toFloat()) }
-                val rot = Bitmap.createBitmap(sampledBitmap, 0, 0, sampledBitmap.width, sampledBitmap.height, matrix, true)
-                if (rot != sampledBitmap) sampledBitmap.recycle()
-                rot
-            } else {
-                sampledBitmap
-            }
-
-            // Pass 4: Resize if still exceeds maxDimension
-            if (rotatedBitmap.width > maxDimension || rotatedBitmap.height > maxDimension) {
-                val scale = maxDimension.toFloat() / maxOf(rotatedBitmap.width, rotatedBitmap.height)
-                val targetW = (rotatedBitmap.width * scale).toInt().coerceAtLeast(1)
-                val targetH = (rotatedBitmap.height * scale).toInt().coerceAtLeast(1)
-                val scaled = Bitmap.createScaledBitmap(rotatedBitmap, targetW, targetH, true)
-                if (scaled != rotatedBitmap) rotatedBitmap.recycle()
-                scaled
-            } else {
-                rotatedBitmap
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "Error loading bitmap from URI: ${t.message}", t)
-            null
-        }
-    }
-
-    /**
-     * Memory-safe bitmap loading from byte array.
-     */
-    fun loadBitmapFromBytes(bytes: ByteArray, maxDimension: Int = 1200): Bitmap? {
-        try {
-            if (bytes.isEmpty()) return null
-            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOpts)
-            if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return null
-
-            var sampleSize = 1
-            val maxSide = maxOf(boundsOpts.outWidth, boundsOpts.outHeight)
-            while (maxSide / (sampleSize * 2) >= maxDimension) {
-                sampleSize *= 2
-            }
-
-            val decodeOpts = BitmapFactory.Options().apply {
-                inSampleSize = sampleSize
-                inPreferredConfig = Bitmap.Config.ARGB_8888
-            }
-            return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
-        } catch (t: Throwable) {
-            Log.e(TAG, "Error decoding bitmap from bytes: ${t.message}", t)
-            return null
-        }
-    }
-
-    /**
-     * Rebuilt, 100% WYSIWYG 1:1 square cover generator.
-     * Produces pixel-perfect output matching the preview canvas.
-     */
-    fun createCoverBitmap(
-        source: Bitmap,
-        mode: CoverFitMode,
-        zoom: Float = 1.0f,
-        panX: Float = 0f,
-        panY: Float = 0f,
-        rotationDegrees: Int = 0,
-        viewportSizePx: Float = 800f,
-        outputDimension: Int = 800
-    ): Bitmap {
-        // Step 1: Rotate bitmap if specified
-        val rotated = if (rotationDegrees != 0) {
-            val rotMatrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
-            Bitmap.createBitmap(source, 0, 0, source.width, source.height, rotMatrix, true)
-        } else {
-            source
-        }
-
-        val output = Bitmap.createBitmap(outputDimension, outputDimension, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(output)
-
-        val srcW = rotated.width.toFloat()
-        val srcH = rotated.height.toFloat()
-
-        when (mode) {
-            CoverFitMode.FILL -> {
-                // Auto center-crop filling the 1:1 square completely
-                val scale = maxOf(outputDimension / srcW, outputDimension / srcH)
-                val scaledW = srcW * scale
-                val scaledH = srcH * scale
-                val left = (outputDimension - scaledW) / 2f
-                val top = (outputDimension - scaledH) / 2f
-                val destRect = RectF(left, top, left + scaledW, top + scaledH)
-                val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-                canvas.drawBitmap(rotated, null, destRect, paint)
-            }
-            CoverFitMode.FIT -> {
-                // Fit entire image inside 1:1 box with deep gradient background
-                val bgPaint = Paint().apply {
-                    shader = LinearGradient(
-                        0f, 0f, outputDimension.toFloat(), outputDimension.toFloat(),
-                        Color.rgb(26, 26, 36), Color.rgb(10, 10, 15),
-                        Shader.TileMode.CLAMP
-                    )
-                }
-                canvas.drawRect(0f, 0f, outputDimension.toFloat(), outputDimension.toFloat(), bgPaint)
-
-                val scale = minOf(outputDimension / srcW, outputDimension / srcH)
-                val scaledW = srcW * scale
-                val scaledH = srcH * scale
-                val left = (outputDimension - scaledW) / 2f
-                val top = (outputDimension - scaledH) / 2f
-                val destRect = RectF(left, top, left + scaledW, top + scaledH)
-                val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-                canvas.drawBitmap(rotated, null, destRect, paint)
-            }
-            CoverFitMode.CUSTOM -> {
-                // Dark background
-                canvas.drawColor(Color.rgb(15, 15, 20))
-
-                val ratio = outputDimension.toFloat() / viewportSizePx.coerceAtLeast(1f)
-                val baseScale = maxOf(viewportSizePx / srcW, viewportSizePx / srcH)
-                val currentScale = baseScale * zoom * ratio
-
-                val scaledW = srcW * currentScale
-                val scaledH = srcH * currentScale
-
-                val centerX = outputDimension / 2f + (panX * ratio)
-                val centerY = outputDimension / 2f + (panY * ratio)
-
-                val left = centerX - (scaledW / 2f)
-                val top = centerY - (scaledH / 2f)
-
-                val destRect = RectF(left, top, left + scaledW, top + scaledH)
-                val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-                canvas.drawBitmap(rotated, null, destRect, paint)
-            }
-        }
-
-        if (rotated != source) {
-            rotated.recycle()
-        }
-        return output
-    }
-
-    /**
-     * Compresses a Bitmap into high-quality JPEG bytes suitable for ID3 embedding.
-     */
-    fun bitmapToCoverBytes(bitmap: Bitmap, quality: Int = 90): Pair<ByteArray, String> {
-        val bos = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, bos)
-        return Pair(bos.toByteArray(), "image/jpeg")
-    }
-
-    /**
-     * Generates a preset album artwork programmatically.
-     * Useful for immediate testing and stylish covers without needing local files.
-     */
-    fun generatePresetCover(presetIndex: Int, dimension: Int = 800): Pair<ByteArray, String> {
-        val bitmap = Bitmap.createBitmap(dimension, dimension, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            textAlign = Paint.Align.CENTER
-            textSize = dimension * 0.075f
-            isFakeBoldText = true
-        }
-        val subTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(220, 220, 230)
-            textAlign = Paint.Align.CENTER
-            textSize = dimension * 0.040f
-        }
-
-        when (presetIndex % 4) {
-            0 -> {
-                // Sunset Melodi
-                paint.shader = LinearGradient(
-                    0f, 0f, dimension.toFloat(), dimension.toFloat(),
-                    Color.rgb(255, 87, 34), Color.rgb(136, 14, 79),
-                    Shader.TileMode.CLAMP
-                )
-                canvas.drawRect(0f, 0f, dimension.toFloat(), dimension.toFloat(), paint)
-
-                // Vinyl Disc concentric rings
-                paint.shader = null
-                paint.style = Paint.Style.STROKE
-                paint.color = Color.argb(40, 255, 255, 255)
-                val center = dimension / 2f
-                for (r in listOf(0.18f, 0.25f, 0.32f, 0.38f)) {
-                    paint.strokeWidth = 3f
-                    canvas.drawCircle(center, center - 40f, dimension * r, paint)
-                }
-
-                // Center Icon Circle
-                paint.style = Paint.Style.FILL
-                paint.color = Color.rgb(255, 171, 0)
-                canvas.drawCircle(center, center - 40f, dimension * 0.12f, paint)
-
-                canvas.drawText("SUNSET MELODI", center, dimension * 0.78f, textPaint)
-                canvas.drawText("Studio Album Edition", center, dimension * 0.85f, subTextPaint)
-            }
-            1 -> {
-                // Neon Cyber
-                paint.shader = LinearGradient(
-                    0f, 0f, dimension.toFloat(), dimension.toFloat(),
-                    Color.rgb(18, 18, 30), Color.rgb(94, 53, 177),
-                    Shader.TileMode.CLAMP
-                )
-                canvas.drawRect(0f, 0f, dimension.toFloat(), dimension.toFloat(), paint)
-
-                // Equalizer wave bars
-                paint.shader = null
-                paint.style = Paint.Style.FILL
-                val barCount = 11
-                val barW = dimension * 0.035f
-                val spacing = dimension * 0.025f
-                val startX = (dimension - (barCount * barW + (barCount - 1) * spacing)) / 2f
-                val heights = listOf(0.15f, 0.25f, 0.38f, 0.50f, 0.35f, 0.58f, 0.42f, 0.30f, 0.45f, 0.22f, 0.12f)
-                for (i in 0 until barCount) {
-                    val x = startX + i * (barW + spacing)
-                    val h = dimension * heights[i]
-                    val y = dimension * 0.45f - h / 2f
-                    paint.color = if (i % 2 == 0) Color.rgb(0, 229, 255) else Color.rgb(255, 64, 129)
-                    canvas.drawRoundRect(RectF(x, y, x + barW, y + h), 8f, 8f, paint)
-                }
-
-                canvas.drawText("NEON SOUNDS", dimension / 2f, dimension * 0.78f, textPaint)
-                canvas.drawText("Cyber Electronic Beats", dimension / 2f, dimension * 0.85f, subTextPaint)
-            }
-            2 -> {
-                // Akustik Alami
-                paint.shader = LinearGradient(
-                    0f, 0f, 0f, dimension.toFloat(),
-                    Color.rgb(0, 77, 64), Color.rgb(18, 30, 24),
-                    Shader.TileMode.CLAMP
-                )
-                canvas.drawRect(0f, 0f, dimension.toFloat(), dimension.toFloat(), paint)
-
-                paint.shader = null
-                paint.style = Paint.Style.STROKE
-                paint.color = Color.rgb(77, 182, 172)
-                paint.strokeWidth = 5f
-                canvas.drawCircle(dimension / 2f, dimension * 0.40f, dimension * 0.22f, paint)
-                paint.strokeWidth = 2f
-                canvas.drawCircle(dimension / 2f, dimension * 0.40f, dimension * 0.28f, paint)
-
-                canvas.drawText("AKUSTIK SENJA", dimension / 2f, dimension * 0.78f, textPaint)
-                canvas.drawText("Original Acoustic Tracks", dimension / 2f, dimension * 0.85f, subTextPaint)
-            }
-            3 -> {
-                // Golden Studio
-                paint.shader = LinearGradient(
-                    0f, 0f, dimension.toFloat(), dimension.toFloat(),
-                    Color.rgb(20, 20, 22), Color.rgb(44, 44, 48),
-                    Shader.TileMode.CLAMP
-                )
-                canvas.drawRect(0f, 0f, dimension.toFloat(), dimension.toFloat(), paint)
-
-                // Gold Border
-                paint.shader = null
-                paint.style = Paint.Style.STROKE
-                paint.color = Color.rgb(255, 193, 7)
-                paint.strokeWidth = 8f
-                canvas.drawRect(dimension * 0.08f, dimension * 0.08f, dimension * 0.92f, dimension * 0.92f, paint)
-
-                paint.strokeWidth = 2f
-                canvas.drawRect(dimension * 0.11f, dimension * 0.11f, dimension * 0.89f, dimension * 0.89f, paint)
-
-                textPaint.color = Color.rgb(255, 215, 64)
-                canvas.drawText("GOLDEN HITS", dimension / 2f, dimension * 0.50f, textPaint)
-                canvas.drawText("Master Recording", dimension / 2f, dimension * 0.60f, subTextPaint)
-            }
-        }
-
-        val result = bitmapToCoverBytes(bitmap, 90)
-        bitmap.recycle()
-        return result
-    }
-
-    /**
-     * Checks if a file is an MP3 by inspecting ID3v2 tag or MPEG sync word bytes.
-     */
     fun isMp3File(file: File): Boolean {
-        if (!file.exists() || file.length() < 4) return false
+        if (!file.exists() || file.length() < 10) return false
+        if (file.name.endsWith(".mp3", ignoreCase = true)) return true
         try {
             RandomAccessFile(file, "r").use { raf ->
-                val header = ByteArray(4)
+                val header = ByteArray(3)
                 raf.readFully(header)
                 if (header[0] == 'I'.code.toByte() && header[1] == 'D'.code.toByte() && header[2] == '3'.code.toByte()) {
                     return true
                 }
-                val b0 = header[0].toInt() and 0xFF
-                val b1 = header[1].toInt() and 0xFF
-                if (b0 == 0xFF && (b1 and 0xE0) == 0xE0) {
+                // Check sync byte
+                raf.seek(0)
+                val b1 = raf.read()
+                val b2 = raf.read()
+                if (b1 == 0xFF && (b2 and 0xE0) == 0xE0) {
                     return true
                 }
             }
-        } catch (_: Exception) {}
-        return file.name.endsWith(".mp3", ignoreCase = true)
-    }
-
-    /**
-     * Extracts cover thumbnail for library or preview display from ID3 tags or retriever.
-     */
-    fun extractCoverThumbnail(file: File): ByteArray? {
-        if (!file.exists()) return null
-        val direct = extractId3v2Picture(file)
-        if (direct != null && direct.isNotEmpty()) return direct
-        try {
-            val retriever = MediaMetadataRetriever()
-            retriever.setDataSource(file.absolutePath)
-            val pic = retriever.embeddedPicture
-            retriever.release()
-            return pic
-        } catch (_: Exception) {
-            return null
-        }
-    }
-
-    /**
-     * Direct ID3v2 APIC parser to extract embedded artwork if standard retriever misses it.
-     */
-    fun extractId3v2Picture(file: File): ByteArray? {
-        try {
-            RandomAccessFile(file, "r").use { raf ->
-                if (raf.length() < 10) return null
-                val header = ByteArray(10)
-                raf.readFully(header)
-                if (header[0] != 'I'.code.toByte() || header[1] != 'D'.code.toByte() || header[2] != '3'.code.toByte()) {
-                    return null
-                }
-                val tagSize = parseSynchsafe(header, 6)
-                if (tagSize <= 0 || tagSize > 30 * 1024 * 1024) return null // Guard against corrupted size
-
-                val tagBuffer = ByteArray(tagSize)
-                raf.readFully(tagBuffer)
-
-                // Search for "APIC" frame
-                var offset = 0
-                while (offset + 10 <= tagSize) {
-                    val frameId = String(tagBuffer, offset, 4, Charsets.US_ASCII)
-                    val frameSize = ((tagBuffer[offset + 4].toInt() and 0xFF) shl 24) or
-                            ((tagBuffer[offset + 5].toInt() and 0xFF) shl 16) or
-                            ((tagBuffer[offset + 6].toInt() and 0xFF) shl 8) or
-                            (tagBuffer[offset + 7].toInt() and 0xFF)
-
-                    if (frameId.isBlank() || frameSize <= 0) break
-                    if (offset + 10 + frameSize > tagSize) break
-
-                    if (frameId == "APIC") {
-                        val payloadStart = offset + 10
-                        val encoding = tagBuffer[payloadStart].toInt() and 0xFF
-                        var p = payloadStart + 1
-                        // skip MIME type (ASCII null-terminated)
-                        while (p < payloadStart + frameSize && tagBuffer[p] != 0.toByte()) {
-                            p++
-                        }
-                        p++ // skip null after MIME
-                        p++ // skip picture type byte
-                        // skip description according to encoding
-                        if (encoding == 0 || encoding == 3) {
-                            while (p < payloadStart + frameSize && tagBuffer[p] != 0.toByte()) {
-                                p++
-                            }
-                            p++ // skip null after description
-                        } else {
-                            // UTF-16
-                            while (p + 1 < payloadStart + frameSize && (tagBuffer[p] != 0.toByte() || tagBuffer[p + 1] != 0.toByte())) {
-                                p += 2
-                            }
-                            p += 2
-                        }
-
-                        val picDataLen = (payloadStart + frameSize) - p
-                        if (picDataLen > 0) {
-                            val pic = ByteArray(picDataLen)
-                            System.arraycopy(tagBuffer, p, pic, 0, picDataLen)
-                            return pic
-                        }
-                    }
-                    offset += 10 + frameSize
-                }
-            }
         } catch (e: Exception) {
-            Log.w(TAG, "Error in fallback APIC reader: ${e.message}")
+            // ignore
         }
-        return null
+        return false
+    }
+
+    fun detectMimeType(bytes: ByteArray): String {
+        if (bytes.size >= 8) {
+            if (bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()) {
+                return "image/png"
+            }
+            if (bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte()) {
+                return "image/jpeg"
+            }
+        }
+        return "image/jpeg"
     }
 
     /**
-     * Injects or replaces ID3v2.3 tags and embedded cover artwork in an MP3 file.
-     * This is a lossless operation: audio frames are copied directly without re-encoding.
+     * Lossless MP3 ID3v2.3 tag writer conforming to the exact specification
+     * demonstrated by reference MP3 (Lish_-_Cantik_db52f43d.mp3).
      */
     suspend fun writeMp3Tags(
         sourceFile: File,
         outputFile: File,
         metadata: SongMetadata
     ): Boolean = withContext(Dispatchers.IO) {
+        var tempFile: File? = null
         try {
+            if (!sourceFile.exists()) {
+                Log.e(TAG, "Source file does not exist: ${sourceFile.absolutePath}")
+                return@withContext false
+            }
+
+            // Determine MPEG audio start and end offsets
             var audioStart = 0L
             var audioEnd = sourceFile.length()
 
-            // 1. Detect existing ID3v2 header and ID3v1 footer safely using RandomAccessFile
             RandomAccessFile(sourceFile, "r").use { raf ->
-                val len = raf.length()
-                if (len >= 10) {
-                    val header = ByteArray(10)
-                    raf.readFully(header)
-                    if (header[0] == 'I'.code.toByte() &&
-                        header[1] == 'D'.code.toByte() &&
-                        header[2] == '3'.code.toByte()
-                    ) {
-                        val flags = header[5].toInt()
-                        val tagSize = parseSynchsafe(header, 6)
-                        audioStart = 10L + tagSize
-                        // ID3v2.4 footer flag check
-                        if ((flags and 0x10) != 0) {
-                            audioStart += 10L
-                        }
+                val magic = ByteArray(3)
+                raf.readFully(magic)
+                if (magic[0] == 'I'.code.toByte() && magic[1] == 'D'.code.toByte() && magic[2] == '3'.code.toByte()) {
+                    val version = raf.read()
+                    val revision = raf.read()
+                    val flags = raf.read()
+                    val sizeBytes = ByteArray(4)
+                    raf.readFully(sizeBytes)
+                    val tagSize = parseSynchsafe(sizeBytes, 0)
+                    audioStart = 10L + tagSize
+                    if ((flags and 0x10) != 0) { // footer present
+                        audioStart += 10L
                     }
                 }
 
-                if (len - audioStart > 128) {
-                    raf.seek(len - 128)
-                    val tagBytes = ByteArray(3)
-                    raf.readFully(tagBytes)
-                    if (tagBytes[0] == 'T'.code.toByte() &&
-                        tagBytes[1] == 'A'.code.toByte() &&
-                        tagBytes[2] == 'G'.code.toByte()
-                    ) {
-                        audioEnd = len - 128
+                // Check for ID3v1 tag at the end (128 bytes)
+                if (sourceFile.length() - audioStart > 128) {
+                    raf.seek(sourceFile.length() - 128)
+                    val id3v1Tag = ByteArray(3)
+                    raf.readFully(id3v1Tag)
+                    if (id3v1Tag[0] == 'T'.code.toByte() && id3v1Tag[1] == 'A'.code.toByte() && id3v1Tag[2] == 'G'.code.toByte()) {
+                        audioEnd = sourceFile.length() - 128
                     }
                 }
             }
@@ -669,146 +274,234 @@ object AudioTagManager {
                 audioEnd = sourceFile.length()
             }
 
-            // 2. Assemble all ID3v2.3 frames
+            // Build ID3v2.3 frames
             val framesStream = ByteArrayOutputStream()
-            framesStream.write(buildTextFrame("TIT2", metadata.title))
-            framesStream.write(buildTextFrame("TPE1", metadata.artist))
-            framesStream.write(buildTextFrame("TALB", metadata.album))
-            framesStream.write(buildTextFrame("TPE2", metadata.albumArtist))
-            framesStream.write(buildTextFrame("TCON", metadata.genre))
-            framesStream.write(buildTextFrame("TYER", metadata.year))
-            framesStream.write(buildTextFrame("TRCK", metadata.trackNumber))
-            framesStream.write(buildTextFrame("TCOM", metadata.composer))
+
+            // 1. Text frames
+            if (metadata.title.isNotBlank()) {
+                framesStream.write(buildTextFrame("TIT2", metadata.title))
+            }
+            if (metadata.artist.isNotBlank()) {
+                framesStream.write(buildTextFrame("TPE1", metadata.artist))
+            }
+            if (metadata.album.isNotBlank()) {
+                framesStream.write(buildTextFrame("TALB", metadata.album))
+            }
+            if (metadata.albumArtist.isNotBlank()) {
+                framesStream.write(buildTextFrame("TPE2", metadata.albumArtist))
+            }
+            if (metadata.genre.isNotBlank()) {
+                framesStream.write(buildTextFrame("TCON", metadata.genre))
+            }
+            if (metadata.year.isNotBlank()) {
+                framesStream.write(buildTextFrame("TYER", metadata.year))
+            }
+            if (metadata.trackNumber.isNotBlank()) {
+                framesStream.write(buildTextFrame("TRCK", metadata.trackNumber))
+            }
+            if (metadata.composer.isNotBlank()) {
+                framesStream.write(buildTextFrame("TCOM", metadata.composer))
+            }
             if (metadata.comment.isNotBlank()) {
                 framesStream.write(buildCommentFrame(metadata.comment))
             }
-            metadata.coverArtBytes?.let { imageBytes ->
-                if (imageBytes.isNotEmpty()) {
-                    framesStream.write(buildPictureFrame(imageBytes, metadata.coverMimeType))
-                }
+
+            // Software / encoder frame (TSSE)
+            framesStream.write(buildTextFrame("TSSE", "Lish Studio Record"))
+
+            // 2. APIC picture frame (Album artwork)
+            val coverBytes = metadata.coverArtBytes
+            if (coverBytes != null && coverBytes.isNotEmpty()) {
+                val picFrame = buildPictureFrame(coverBytes, metadata.coverMimeType)
+                framesStream.write(picFrame)
             }
 
             val framesData = framesStream.toByteArray()
-            val tagSize = framesData.size
 
-            // 3. Construct ID3v2.3 10-byte header
-            val id3Header = ByteArray(10)
-            id3Header[0] = 'I'.code.toByte()
-            id3Header[1] = 'D'.code.toByte()
-            id3Header[2] = '3'.code.toByte()
-            id3Header[3] = 0x03 // version 2.3
-            id3Header[4] = 0x00 // revision
-            id3Header[5] = 0x00 // flags
-            val synchsafe = toSynchsafe(tagSize)
-            System.arraycopy(synchsafe, 0, id3Header, 6, 4)
+            // Padding: 1024 bytes of nulls (standard in MP3 tag editors, enables instant re-tagging)
+            val paddingSize = 1024
+            val paddingBytes = ByteArray(paddingSize)
 
-            // 4. Safely write to tempOutput file
-            val tempDir = outputFile.parentFile ?: sourceFile.parentFile ?: File(outputFile.absolutePath).parentFile
-            val tempOutput = File(tempDir, "tmp_tag_${System.currentTimeMillis()}_${(1000..9999).random()}.mp3")
+            val totalTagPayloadSize = framesData.size + paddingSize
+            val synchsafeSize = toSynchsafe(totalTagPayloadSize)
 
-            try {
-                FileOutputStream(tempOutput).use { fos ->
-                    fos.write(id3Header)
-                    fos.write(framesData)
+            // ID3v2.3 10-byte header: "ID3" + version 3 + revision 0 + flags 0 + 4-byte synchsafe size
+            val id3Header = byteArrayOf(
+                'I'.code.toByte(), 'D'.code.toByte(), '3'.code.toByte(),
+                0x03.toByte(), // ID3v2.3
+                0x00.toByte(), // revision
+                0x00.toByte(), // flags
+                synchsafeSize[0], synchsafeSize[1], synchsafeSize[2], synchsafeSize[3]
+            )
 
-                    // Copy audio payload with exact RandomAccessFile seek
-                    RandomAccessFile(sourceFile, "r").use { raf ->
-                        raf.seek(audioStart)
-                        var remaining = audioEnd - audioStart
-                        val buffer = ByteArray(65536)
-                        while (remaining > 0) {
-                            val toRead = buffer.size.toLong().coerceAtMost(remaining).toInt()
-                            val read = raf.read(buffer, 0, toRead)
-                            if (read <= 0) break
-                            fos.write(buffer, 0, read)
-                            remaining -= read
-                        }
-                    }
-                    fos.flush()
-                }
-
-                // Ensure parent directory exists and perform atomic overwrite
-                if (outputFile.parentFile?.exists() == false) {
-                    outputFile.parentFile?.mkdirs()
-                }
-                tempOutput.copyTo(outputFile, overwrite = true)
-                tempOutput.delete()
-                true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed writing to temp file or target: ${e.message}", e)
-                try { tempOutput.delete() } catch (_: Exception) {}
-                false
+            // Write to a temporary file first
+            val parentDir = outputFile.parentFile ?: sourceFile.parentFile ?: File("/tmp")
+            if (!parentDir.exists()) {
+                parentDir.mkdirs()
             }
+            tempFile = File(parentDir, "tmp_lish_tag_${System.currentTimeMillis()}_${Random.nextInt(1000, 9999)}.mp3")
+
+            FileOutputStream(tempFile).use { fos ->
+                fos.write(id3Header)
+                fos.write(framesData)
+                fos.write(paddingBytes)
+
+                // Copy audio stream from source
+                RandomAccessFile(sourceFile, "r").use { raf ->
+                    raf.seek(audioStart)
+                    var remaining = audioEnd - audioStart
+                    val buffer = ByteArray(65536)
+                    while (remaining > 0) {
+                        val toRead = min(remaining, buffer.size.toLong()).toInt()
+                        val read = raf.read(buffer, 0, toRead)
+                        if (read <= 0) break
+                        fos.write(buffer, 0, read)
+                        remaining -= read
+                    }
+                }
+                fos.flush()
+            }
+
+            // Replace target file
+            if (outputFile.exists()) {
+                outputFile.delete()
+            }
+            val renamed = tempFile.renameTo(outputFile)
+            if (!renamed) {
+                // Fallback copy
+                tempFile.copyTo(outputFile, overwrite = true)
+                tempFile.delete()
+            }
+            Log.d(TAG, "Successfully wrote ID3v2.3 tags to ${outputFile.absolutePath} (size: ${outputFile.length()} bytes)")
+            true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to write MP3 ID3 tags: ${e.message}", e)
+            Log.e(TAG, "Failed writing MP3 tags: ${e.message}", e)
+            tempFile?.delete()
             false
         }
     }
 
-    private fun buildTextFrame(frameId: String, text: String): ByteArray {
+    /**
+     * Builds ID3v2.3 text frame:
+     * - 4 bytes ID
+     * - 4 bytes size (32-bit big-endian)
+     * - 2 bytes flags (00 00)
+     * - payload: encoding byte + text bytes (with ISO-8859-1 for Latin/ASCII with null terminator,
+     *   or UTF-16 with BOM if non-ASCII)
+     */
+    fun buildTextFrame(frameId: String, text: String): ByteArray {
         if (text.isBlank()) return ByteArray(0)
+
         val bos = ByteArrayOutputStream()
-        // Encoding byte: 0x01 (UTF-16 with BOM)
-        bos.write(0x01)
-        // UTF-16LE BOM
-        bos.write(0xFF)
-        bos.write(0xFE)
-        val textBytes = text.toByteArray(Charsets.UTF_16LE)
-        bos.write(textBytes)
+        val isAsciiOrLatin = text.all { it.code in 0..255 }
 
-        val payload = bos.toByteArray()
-        val frameHeader = ByteArrayOutputStream()
-        frameHeader.write(frameId.toByteArray(Charsets.US_ASCII))
-        frameHeader.write(toInt32Bytes(payload.size))
-        frameHeader.write(byteArrayOf(0x00, 0x00)) // Flags
-        frameHeader.write(payload)
-        return frameHeader.toByteArray()
-    }
-
-    private fun buildPictureFrame(imageBytes: ByteArray, mimeType: String): ByteArray {
-        if (imageBytes.isEmpty()) return ByteArray(0)
-        val normalizedMime = when {
-            mimeType.contains("png", true) -> "image/png"
-            else -> "image/jpeg"
+        if (isAsciiOrLatin) {
+            // Encoding 0 = ISO-8859-1
+            bos.write(0x00)
+            bos.write(text.toByteArray(StandardCharsets.ISO_8859_1))
+            bos.write(0x00) // Null terminator
+        } else {
+            // Encoding 1 = UTF-16 with BOM
+            bos.write(0x01)
+            bos.write(0xFF)
+            bos.write(0xFE)
+            bos.write(text.toByteArray(StandardCharsets.UTF_16LE))
+            bos.write(0x00)
+            bos.write(0x00)
         }
-        val bos = ByteArrayOutputStream()
-        // Encoding: 0x00 (ISO-8859-1)
-        bos.write(0x00)
-        // MIME Type null-terminated
-        bos.write(normalizedMime.toByteArray(Charsets.US_ASCII))
-        bos.write(0x00)
-        // Picture Type: 0x03 (Cover Front)
-        bos.write(0x03)
-        // Description: null-terminated empty string
-        bos.write(0x00)
-        // Binary picture data
-        bos.write(imageBytes)
 
         val payload = bos.toByteArray()
+        val header = ByteArrayOutputStream()
+        header.write(frameId.toByteArray(StandardCharsets.US_ASCII))
+        header.write(toInt32Bytes(payload.size))
+        header.write(byteArrayOf(0x00, 0x00)) // flags
+        header.write(payload)
+        return header.toByteArray()
+    }
+
+    /**
+     * Builds ID3v2.3 APIC picture frame:
+     * Exact binary match to reference MP3:
+     * - Frame ID: "APIC" (4 bytes)
+     * - Frame size: 32-bit big-endian integer (normal non-synchsafe in ID3v2.3)
+     * - Flags: 00 00 (2 bytes)
+     * - Payload:
+     *     - Byte 0: encoding 0x00 (ISO-8859-1)
+     *     - MIME string with null terminator: "image/jpeg\x00" (or "image/png\x00")
+     *     - Picture type: 0x03 (Cover front)
+     *     - Description with null terminator: "Cover\x00"
+     *     - Raw JPEG / PNG image bytes
+     */
+    fun buildPictureFrame(imageBytes: ByteArray, mimeType: String): ByteArray {
+        if (imageBytes.isEmpty()) return ByteArray(0)
+
+        val normalizedMime = if (mimeType.contains("png", ignoreCase = true)) "image/png" else "image/jpeg"
+
+        val payloadStream = ByteArrayOutputStream()
+        // 1. Text encoding byte: 0x00 (ISO-8859-1)
+        payloadStream.write(0x00)
+
+        // 2. MIME type string + null terminator
+        payloadStream.write(normalizedMime.toByteArray(StandardCharsets.US_ASCII))
+        payloadStream.write(0x00)
+
+        // 3. Picture type: 0x03 (Cover / front)
+        payloadStream.write(0x03)
+
+        // 4. Description: "Cover" + null terminator (6 bytes: 'C','o','v','e','r',0x00)
+        payloadStream.write("Cover".toByteArray(StandardCharsets.ISO_8859_1))
+        payloadStream.write(0x00)
+
+        // 5. Binary image bytes
+        payloadStream.write(imageBytes)
+
+        val payload = payloadStream.toByteArray()
+
         val frameHeader = ByteArrayOutputStream()
-        frameHeader.write("APIC".toByteArray(Charsets.US_ASCII))
+        // Frame ID
+        frameHeader.write("APIC".toByteArray(StandardCharsets.US_ASCII))
+        // 4-byte size (32-bit big-endian integer)
         frameHeader.write(toInt32Bytes(payload.size))
-        frameHeader.write(byteArrayOf(0x00, 0x00)) // Flags
+        // 2-byte flags
+        frameHeader.write(byteArrayOf(0x00, 0x00))
+        // Payload
         frameHeader.write(payload)
+
         return frameHeader.toByteArray()
     }
 
-    private fun buildCommentFrame(comment: String): ByteArray {
+    /**
+     * Builds ID3v2.3 COMM comment frame.
+     */
+    fun buildCommentFrame(comment: String): ByteArray {
         if (comment.isBlank()) return ByteArray(0)
-        val bos = ByteArrayOutputStream()
-        // Encoding: 0x01 (UTF-16 with BOM)
-        bos.write(0x01)
-        // Language: "eng"
-        bos.write("eng".toByteArray(Charsets.US_ASCII))
-        // Short description: empty string in UTF-16LE with BOM and null terminator
-        bos.write(byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 0x00, 0x00))
-        // Actual comment text
-        bos.write(byteArrayOf(0xFF.toByte(), 0xFE.toByte()))
-        bos.write(comment.toByteArray(Charsets.UTF_16LE))
 
-        val payload = bos.toByteArray()
+        val payloadStream = ByteArrayOutputStream()
+        val isAsciiOrLatin = comment.all { it.code in 0..255 }
+
+        if (isAsciiOrLatin) {
+            payloadStream.write(0x00) // ISO-8859-1
+            payloadStream.write("eng".toByteArray(StandardCharsets.US_ASCII))
+            payloadStream.write(0x00) // Empty short description
+            payloadStream.write(comment.toByteArray(StandardCharsets.ISO_8859_1))
+            payloadStream.write(0x00)
+        } else {
+            payloadStream.write(0x01) // UTF-16
+            payloadStream.write("eng".toByteArray(StandardCharsets.US_ASCII))
+            payloadStream.write(0xFF)
+            payloadStream.write(0xFE)
+            payloadStream.write(0x00)
+            payloadStream.write(0x00)
+            payloadStream.write(0xFF)
+            payloadStream.write(0xFE)
+            payloadStream.write(comment.toByteArray(StandardCharsets.UTF_16LE))
+            payloadStream.write(0x00)
+            payloadStream.write(0x00)
+        }
+
+        val payload = payloadStream.toByteArray()
         val frameHeader = ByteArrayOutputStream()
-        frameHeader.write("COMM".toByteArray(Charsets.US_ASCII))
+        frameHeader.write("COMM".toByteArray(StandardCharsets.US_ASCII))
         frameHeader.write(toInt32Bytes(payload.size))
         frameHeader.write(byteArrayOf(0x00, 0x00))
         frameHeader.write(payload)
@@ -838,5 +531,407 @@ object AudioTagManager {
                 ((b[offset + 1].toInt() and 0x7F) shl 14) or
                 ((b[offset + 2].toInt() and 0x7F) shl 7) or
                 (b[offset + 3].toInt() and 0x7F)
+    }
+
+    private fun parseNormalInt32(b: ByteArray, offset: Int): Int {
+        return ((b[offset].toInt() and 0xFF) shl 24) or
+                ((b[offset + 1].toInt() and 0xFF) shl 16) or
+                ((b[offset + 2].toInt() and 0xFF) shl 8) or
+                (b[offset + 3].toInt() and 0xFF)
+    }
+
+    /**
+     * Extracts ID3v2.3/ID3v2.4 tags and APIC cover directly from the MP3 file header.
+     */
+    private fun extractId3v2Tags(file: File): SongMetadata? {
+        if (!file.exists() || file.length() < 10) return null
+
+        RandomAccessFile(file, "r").use { raf ->
+            val header = ByteArray(10)
+            raf.readFully(header)
+            if (header[0] != 'I'.code.toByte() || header[1] != 'D'.code.toByte() || header[2] != '3'.code.toByte()) {
+                return null
+            }
+            val majorVersion = header[3].toInt()
+            val totalTagSize = parseSynchsafe(header, 6)
+            if (totalTagSize <= 0 || totalTagSize > 30 * 1024 * 1024) return null
+
+            val tagBytes = ByteArray(totalTagSize)
+            raf.readFully(tagBytes)
+
+            var offset = 0
+            var title = ""
+            var artist = ""
+            var album = ""
+            var albumArtist = ""
+            var genre = ""
+            var year = ""
+            var trackNumber = ""
+            var composer = ""
+            var comment = ""
+            var coverBytes: ByteArray? = null
+            var coverMime = "image/jpeg"
+
+            while (offset + 10 <= totalTagSize) {
+                // If we encounter padding null bytes
+                if (tagBytes[offset] == 0.toByte()) break
+
+                val frameId = String(tagBytes, offset, 4, StandardCharsets.US_ASCII)
+                val frameSize = if (majorVersion == 4) {
+                    parseSynchsafe(tagBytes, offset + 4)
+                } else {
+                    parseNormalInt32(tagBytes, offset + 4)
+                }
+
+                offset += 10
+                if (frameSize <= 0 || offset + frameSize > totalTagSize) {
+                    break
+                }
+
+                val frameData = ByteArray(frameSize)
+                System.arraycopy(tagBytes, offset, frameData, 0, frameSize)
+                offset += frameSize
+
+                when (frameId) {
+                    "TIT2" -> title = decodeTextFrame(frameData)
+                    "TPE1" -> artist = decodeTextFrame(frameData)
+                    "TALB" -> album = decodeTextFrame(frameData)
+                    "TPE2" -> albumArtist = decodeTextFrame(frameData)
+                    "TCON" -> genre = decodeTextFrame(frameData)
+                    "TYER", "TDRC" -> year = decodeTextFrame(frameData)
+                    "TRCK" -> trackNumber = decodeTextFrame(frameData)
+                    "TCOM" -> composer = decodeTextFrame(frameData)
+                    "COMM" -> comment = decodeCommentFrame(frameData)
+                    "APIC" -> {
+                        val parsedCover = parseApicFrame(frameData)
+                        if (parsedCover != null) {
+                            coverBytes = parsedCover.first
+                            coverMime = parsedCover.second
+                        }
+                    }
+                }
+            }
+
+            return SongMetadata(
+                title = title,
+                artist = artist,
+                album = album,
+                albumArtist = albumArtist,
+                genre = genre,
+                year = year,
+                trackNumber = trackNumber,
+                composer = composer,
+                comment = comment,
+                coverArtBytes = coverBytes,
+                coverMimeType = coverMime
+            )
+        }
+    }
+
+    private fun decodeTextFrame(data: ByteArray): String {
+        if (data.isEmpty()) return ""
+        val encoding = data[0].toInt()
+        val textBytes = if (data.size > 1) data.copyOfRange(1, data.size) else ByteArray(0)
+        return try {
+            when (encoding) {
+                0 -> String(textBytes, StandardCharsets.ISO_8859_1).trimEnd('\u0000', ' ')
+                1 -> {
+                    // UTF-16 with BOM
+                    String(textBytes, StandardCharsets.UTF_16).trimEnd('\u0000', ' ')
+                }
+                2 -> String(textBytes, StandardCharsets.UTF_16BE).trimEnd('\u0000', ' ')
+                3 -> String(textBytes, StandardCharsets.UTF_8).trimEnd('\u0000', ' ')
+                else -> String(textBytes, StandardCharsets.ISO_8859_1).trimEnd('\u0000', ' ')
+            }
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    private fun decodeCommentFrame(data: ByteArray): String {
+        if (data.size < 5) return ""
+        val encoding = data[0].toInt()
+        // skip 3-byte language
+        var textOffset = 4
+        if (encoding == 0 || encoding == 3) {
+            while (textOffset < data.size && data[textOffset] != 0.toByte()) {
+                textOffset++
+            }
+            textOffset++ // skip null
+        } else {
+            while (textOffset + 1 < data.size && !(data[textOffset] == 0.toByte() && data[textOffset + 1] == 0.toByte())) {
+                textOffset += 2
+            }
+            textOffset += 2
+        }
+
+        if (textOffset >= data.size) return ""
+        val commentBytes = data.copyOfRange(textOffset, data.size)
+        return try {
+            when (encoding) {
+                0 -> String(commentBytes, StandardCharsets.ISO_8859_1).trimEnd('\u0000', ' ')
+                1 -> String(commentBytes, StandardCharsets.UTF_16).trimEnd('\u0000', ' ')
+                2 -> String(commentBytes, StandardCharsets.UTF_16BE).trimEnd('\u0000', ' ')
+                3 -> String(commentBytes, StandardCharsets.UTF_8).trimEnd('\u0000', ' ')
+                else -> String(commentBytes, StandardCharsets.ISO_8859_1).trimEnd('\u0000', ' ')
+            }
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    private fun parseApicFrame(data: ByteArray): Pair<ByteArray, String>? {
+        if (data.size < 5) return null
+        var ptr = 0
+        val encoding = data[ptr++].toInt()
+
+        // 1. Read MIME type
+        val mimeStart = ptr
+        while (ptr < data.size && data[ptr] != 0.toByte()) {
+            ptr++
+        }
+        val mime = if (ptr > mimeStart) {
+            String(data, mimeStart, ptr - mimeStart, StandardCharsets.US_ASCII)
+        } else {
+            "image/jpeg"
+        }
+        ptr++ // skip null terminator
+
+        if (ptr >= data.size) return null
+
+        // 2. Picture type (1 byte)
+        val picType = data[ptr++].toInt()
+
+        // 3. Description string (terminated by 0x00 or 0x00 0x00)
+        if (encoding == 0 || encoding == 3) {
+            while (ptr < data.size && data[ptr] != 0.toByte()) {
+                ptr++
+            }
+            ptr++
+        } else {
+            while (ptr + 1 < data.size && !(data[ptr] == 0.toByte() && data[ptr + 1] == 0.toByte())) {
+                ptr += 2
+            }
+            ptr += 2
+        }
+
+        if (ptr >= data.size) return null
+
+        // 4. Remaining bytes are the raw image bytes
+        val imageBytes = data.copyOfRange(ptr, data.size)
+        val detectedMime = if (mime.isNotBlank() && mime.contains("/")) mime else detectMimeType(imageBytes)
+        return Pair(imageBytes, detectedMime)
+    }
+
+    /**
+     * Loads a downsampled Bitmap from URI without OutOfMemory.
+     */
+    suspend fun loadBitmapFromUri(
+        context: Context,
+        uri: Uri,
+        maxDimension: Int = 1000
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        try {
+            var input = context.contentResolver.openInputStream(uri) ?: return@withContext null
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeStream(input, null, options)
+            input.close()
+
+            var inSampleSize = 1
+            var w = options.outWidth
+            var h = options.outHeight
+            while (w > maxDimension || h > maxDimension) {
+                inSampleSize *= 2
+                w /= 2
+                h /= 2
+            }
+
+            input = context.contentResolver.openInputStream(uri) ?: return@withContext null
+            val decodeOptions = BitmapFactory.Options().apply {
+                this.inSampleSize = inSampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val bmp = BitmapFactory.decodeStream(input, null, decodeOptions)
+            input.close()
+            bmp
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed loading bitmap from uri: ${e.message}")
+            null
+        }
+    }
+
+    fun loadBitmapFromBytes(bytes: ByteArray, maxDimension: Int = 1000): Bitmap? {
+        try {
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+
+            var inSampleSize = 1
+            var w = options.outWidth
+            var h = options.outHeight
+            while (w > maxDimension || h > maxDimension) {
+                inSampleSize *= 2
+                w /= 2
+                h /= 2
+            }
+
+            val decodeOptions = BitmapFactory.Options().apply {
+                this.inSampleSize = inSampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions)
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
+    /**
+     * Crops, fits, rotates, and scales a Bitmap into a perfect square album artwork.
+     */
+    fun createCoverBitmap(
+        source: Bitmap,
+        mode: CoverFitMode = CoverFitMode.FILL,
+        zoom: Float = 1.0f,
+        panX: Float = 0f,
+        panY: Float = 0f,
+        rotationDegrees: Float = 0f,
+        viewportSizePx: Float = 300f,
+        outputDimension: Int = 600
+    ): Bitmap {
+        val output = Bitmap.createBitmap(outputDimension, outputDimension, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        canvas.drawColor(Color.BLACK)
+
+        val srcW = source.width.toFloat()
+        val srcH = source.height.toFloat()
+
+        when (mode) {
+            CoverFitMode.FILL -> {
+                val scale = max(outputDimension / srcW, outputDimension / srcH)
+                val scaledW = srcW * scale
+                val scaledH = srcH * scale
+                val dx = (outputDimension - scaledW) / 2f
+                val dy = (outputDimension - scaledH) / 2f
+
+                val matrix = Matrix().apply {
+                    postScale(scale, scale)
+                    postTranslate(dx, dy)
+                }
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+                canvas.drawBitmap(source, matrix, paint)
+            }
+            CoverFitMode.FIT -> {
+                val scale = min(outputDimension / srcW, outputDimension / srcH)
+                val scaledW = srcW * scale
+                val scaledH = srcH * scale
+                val dx = (outputDimension - scaledW) / 2f
+                val dy = (outputDimension - scaledH) / 2f
+
+                val matrix = Matrix().apply {
+                    postScale(scale, scale)
+                    postTranslate(dx, dy)
+                }
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+                canvas.drawBitmap(source, matrix, paint)
+            }
+            CoverFitMode.CUSTOM -> {
+                val baseScale = max(outputDimension / srcW, outputDimension / srcH)
+                val effectiveScale = baseScale * zoom
+                val scaledW = srcW * effectiveScale
+                val scaledH = srcH * effectiveScale
+
+                val ratio = outputDimension / viewportSizePx
+                val transX = ((outputDimension - scaledW) / 2f) + (panX * ratio)
+                val transY = ((outputDimension - scaledH) / 2f) + (panY * ratio)
+
+                val matrix = Matrix().apply {
+                    postScale(effectiveScale, effectiveScale)
+                    postRotate(rotationDegrees, scaledW / 2f, scaledH / 2f)
+                    postTranslate(transX, transY)
+                }
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+                canvas.drawBitmap(source, matrix, paint)
+            }
+        }
+
+        return output
+    }
+
+    /**
+     * Encodes bitmap into high quality JPEG byte array.
+     */
+    fun bitmapToCoverBytes(bitmap: Bitmap, quality: Int = 90): Pair<ByteArray, String> {
+        val stream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+        return Pair(stream.toByteArray(), "image/jpeg")
+    }
+
+    /**
+     * Generates modern studio preset artwork.
+     */
+    fun generatePresetCover(presetIndex: Int, dimension: Int = 600): Pair<ByteArray, String> {
+        val bmp = Bitmap.createBitmap(dimension, dimension, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val rect = RectF(0f, 0f, dimension.toFloat(), dimension.toFloat())
+
+        val (c1, c2, c3, title, subtitle) = when (presetIndex) {
+            0 -> listOf(Color.parseColor("#FF6F00"), Color.parseColor("#D84315"), Color.parseColor("#212121"), "SUNSET MELODY", "Lish Studio Record")
+            1 -> listOf(Color.parseColor("#7C4DFF"), Color.parseColor("#00E5FF"), Color.parseColor("#121212"), "NEON CYBER", "High-Definition Vocal")
+            2 -> listOf(Color.parseColor("#00796B"), Color.parseColor("#43A047"), Color.parseColor("#1B2A1E"), "ACOUSTIC NATURE", "Pure Studio Master")
+            else -> listOf(Color.parseColor("#FFD700"), Color.parseColor("#FF8F00"), Color.parseColor("#1A1A1A"), "GOLDEN STUDIO", "Masterpiece Edition")
+        }
+
+        // Gradient background
+        val grad = LinearGradient(0f, 0f, dimension.toFloat(), dimension.toFloat(), intArrayOf(c1 as Int, c2 as Int, c3 as Int), null, Shader.TileMode.CLAMP)
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = grad }
+        canvas.drawRect(rect, bgPaint)
+
+        // Vinyl disk illustration
+        val center = dimension / 2f
+        val discPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(190, 20, 20, 20)
+            style = Paint.Style.FILL
+        }
+        canvas.drawCircle(center, center, dimension * 0.35f, discPaint)
+
+        // Grooves
+        val groovePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(60, 255, 255, 255)
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+        for (r in listOf(0.32f, 0.28f, 0.24f, 0.20f)) {
+            canvas.drawCircle(center, center, dimension * r, groovePaint)
+        }
+
+        // Center label
+        val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = c1 as Int
+            style = Paint.Style.FILL
+        }
+        canvas.drawCircle(center, center, dimension * 0.12f, labelPaint)
+        val holePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            style = Paint.Style.FILL
+        }
+        canvas.drawCircle(center, center, dimension * 0.03f, holePaint)
+
+        // Title and Subtitle
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = dimension * 0.065f
+            textAlign = Paint.Align.CENTER
+            isFakeBoldText = true
+            setShadowLayer(8f, 0f, 4f, Color.argb(180, 0, 0, 0))
+        }
+        canvas.drawText(title as String, center, dimension * 0.82f, textPaint)
+
+        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(220, 255, 255, 255)
+            textSize = dimension * 0.038f
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText(subtitle as String, center, dimension * 0.88f, subPaint)
+
+        return bitmapToCoverBytes(bmp, 92)
     }
 }
