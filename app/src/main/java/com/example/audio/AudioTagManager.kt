@@ -146,12 +146,19 @@ object AudioTagManager {
                 else -> "MP3"
             }
 
-            // Fallback cover art from retriever if not already extracted
-            if (coverBytes == null || coverBytes.isEmpty()) {
-                val pic = retriever.embeddedPicture
-                if (pic != null && pic.isNotEmpty()) {
-                    coverBytes = pic
-                    coverMime = detectMimeType(pic)
+            // Fallback cover art from retriever only if not WAV and container indicates presence
+            if ((coverBytes == null || coverBytes.isEmpty()) && format != "WAV" && !fileName.endsWith(".wav", true)) {
+                try {
+                    val hasImage = retriever.extractMetadata(32) // METADATA_KEY_HAS_IMAGE (API 28+)
+                    if (hasImage == "yes") {
+                        val pic = retriever.embeddedPicture
+                        if (pic != null && pic.isNotEmpty()) {
+                            coverBytes = pic
+                            coverMime = detectMimeType(pic)
+                        }
+                    }
+                } catch (e: Exception) {
+                    // ignore
                 }
             }
         } catch (e: Exception) {
@@ -540,10 +547,15 @@ object AudioTagManager {
                 (b[offset + 3].toInt() and 0xFF)
     }
 
+    fun extractCoverFromFile(file: File): ByteArray? {
+        if (!file.exists() || !isMp3File(file)) return null
+        return extractId3v2Tags(file)?.coverArtBytes
+    }
+
     /**
      * Extracts ID3v2.3/ID3v2.4 tags and APIC cover directly from the MP3 file header.
      */
-    private fun extractId3v2Tags(file: File): SongMetadata? {
+    fun extractId3v2Tags(file: File): SongMetadata? {
         if (!file.exists() || file.length() < 10) return null
 
         RandomAccessFile(file, "r").use { raf ->

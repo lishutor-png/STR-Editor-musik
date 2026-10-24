@@ -46,9 +46,42 @@ object SampleAudioGenerator {
         }
 
         listOf(
-            AudioDecoder.extractMetadata(context, file = track1, fallbackTitle = "Sunset Synthwave Demo"),
-            AudioDecoder.extractMetadata(context, file = track2, fallbackTitle = "Acoustic Piano Demo"),
-            AudioDecoder.extractMetadata(context, file = track3, fallbackTitle = "Lofi Beat Master")
+            AudioTrackInfo(
+                id = track1.absolutePath,
+                title = "Sunset Synthwave Demo",
+                artist = "Lish Studio Demo",
+                durationMs = 16000L,
+                file = track1,
+                format = AudioFormat.WAV,
+                sizeBytes = track1.length(),
+                sampleRate = 44100,
+                channels = 2,
+                bitrateKbps = 1411
+            ),
+            AudioTrackInfo(
+                id = track2.absolutePath,
+                title = "Acoustic Piano Demo",
+                artist = "Lish Studio Demo",
+                durationMs = 14000L,
+                file = track2,
+                format = AudioFormat.WAV,
+                sizeBytes = track2.length(),
+                sampleRate = 44100,
+                channels = 2,
+                bitrateKbps = 1411
+            ),
+            AudioTrackInfo(
+                id = track3.absolutePath,
+                title = "Lofi Beat Master",
+                artist = "Lish Studio Demo",
+                durationMs = 18000L,
+                file = track3,
+                format = AudioFormat.WAV,
+                sizeBytes = track3.length(),
+                sampleRate = 44100,
+                channels = 2,
+                bitrateKbps = 1411
+            )
         )
     }
 

@@ -228,7 +228,20 @@ object AudioDecoder {
                 else -> AudioFormat.MP3
             }
 
-            val coverArt = retriever.embeddedPicture
+            val coverArt = when {
+                format == AudioFormat.WAV -> null
+                file != null && AudioTagManager.isMp3File(file) -> AudioTagManager.extractCoverFromFile(file)
+                else -> {
+                    try {
+                        val hasImage = retriever.extractMetadata(32) // METADATA_KEY_HAS_IMAGE (API 28+)
+                        if (hasImage == "yes") {
+                            retriever.embeddedPicture
+                        } else null
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
             val size = file?.length() ?: 0L
 
             return AudioTrackInfo(
